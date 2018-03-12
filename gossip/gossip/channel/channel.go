@@ -55,9 +55,13 @@ type GossipChannel interface {
 	// IsMemberInChan checks whether the given member is eligible to be in the channel
 	IsMemberInChan(member discovery.NetworkMember) bool
 
-	// UpdateStateInfo updates this channel's StateInfo message
-	// that is periodically published
-	UpdateStateInfo(msg *proto.SignedGossipMessage)
+	// UpdateLedgerHeight updates the ledger height the peer
+	// publishes to other peers in the channel
+	UpdateLedgerHeight(height uint64)
+
+	// UpdateChaincodes updates the chaincodes the peer publishes
+	// to other peers in the channel
+	UpdateChaincodes(chaincode []*proto.Chaincode)
 
 	// IsOrgInChannel returns whether the given organization is in the channel
 	IsOrgInChannel(membersOrg api.OrgIdentityType) bool
@@ -86,11 +90,16 @@ type GossipChannel interface {
 // Adapter enables the gossipChannel
 // to communicate with gossipServiceImpl.
 type Adapter interface {
+	Sign(msg *proto.GossipMessage) (*proto.SignedGossipMessage, error)
+
 	// GetConf returns the configuration that this GossipChannel will posses
 	GetConf() Config
 
 	// Gossip gossips a message in the channel
 	Gossip(message *proto.SignedGossipMessage)
+
+	// Forward sends a message to the next hops
+	Forward(message proto.ReceivedMessage)
 
 	// DeMultiplex de-multiplexes an item to subscribers
 	DeMultiplex(interface{})
@@ -137,6 +146,7 @@ type gossipChannel struct {
 	stateInfoRequestScheduler *time.Ticker
 	memFilter                 *membershipFilter
 	ledgerHeight              uint64
+	incTime                   uint64
 	leftChannel               int32
 }
 
@@ -163,6 +173,7 @@ func (mf *membershipFilter) GetMembership() []discovery.NetworkMember {
 func NewGossipChannel(pkiID common.PKIidType, org api.OrgIdentityType, mcs api.MessageCryptoService,
 	chainID common.ChainID, adapter Adapter, joinMsg api.JoinChannelMessage) GossipChannel {
 	gc := &gossipChannel{
+		incTime:                   uint64(time.Now().UnixNano()),
 		selfOrg:                   org,
 		pkiID:                     pkiID,
 		mcs:                       mcs,
@@ -278,7 +289,18 @@ func (gc *gossipChannel) periodicalInvocation(fn func(), c <-chan time.Time) {
 
 // LeaveChannel makes the peer leave the channel
 func (gc *gossipChannel) LeaveChannel() {
+	gc.Lock()
+	defer gc.Unlock()
+
 	atomic.StoreInt32(&gc.leftChannel, 1)
+
+	var chaincodes []*proto.Chaincode
+	var height uint64
+	if prevMsg := gc.stateInfoMsg; prevMsg != nil {
+		chaincodes = prevMsg.GetStateInfo().Properties.Chaincodes
+		height = prevMsg.GetStateInfo().Properties.LedgerHeight
+	}
+	gc.updateProperties(height, chaincodes, true)
 }
 
 func (gc *gossipChannel) hasLeftChannel() bool {
@@ -304,7 +326,6 @@ func (gc *gossipChannel) GetPeers() []discovery.NetworkMember {
 		if props != nil && props.LeftChannel {
 			continue
 		}
-		member.Metadata = stateInf.GetStateInfo().Metadata
 		member.Properties = stateInf.GetStateInfo().Properties
 		members = append(members, member)
 	}
@@ -476,7 +497,7 @@ func (gc *gossipChannel) ConfigureChannel(joinMsg api.JoinChannelMessage) {
 	}
 
 	if gc.joinMsg.SequenceNumber() > (joinMsg.SequenceNumber()) {
-		gc.logger.Warning("Already have a more updated JoinChannel message(", gc.joinMsg.SequenceNumber(), ") than", gc.joinMsg.SequenceNumber())
+		gc.logger.Warning("Already have a more updated JoinChannel message(", gc.joinMsg.SequenceNumber(), ") than", joinMsg.SequenceNumber())
 		return
 	}
 
@@ -541,7 +562,7 @@ func (gc *gossipChannel) HandleMessage(msg proto.ReceivedMessage) {
 
 		if added {
 			// Forward the message
-			gc.Gossip(msg.GetGossipMessage())
+			gc.Forward(msg)
 			// DeMultiplex to local subscribers
 			gc.DeMultiplex(m)
 
@@ -769,20 +790,73 @@ func (gc *gossipChannel) createStateInfoRequest() (*proto.SignedGossipMessage, e
 	}).NoopSign()
 }
 
-// UpdateStateInfo updates this channel's StateInfo message
-// that is periodically published
-func (gc *gossipChannel) UpdateStateInfo(msg *proto.SignedGossipMessage) {
-	if !msg.IsStateInfoMsg() {
-		return
-	}
-
+// UpdateLedgerHeight updates the ledger height the peer
+// publishes to other peers in the channel
+func (gc *gossipChannel) UpdateLedgerHeight(height uint64) {
 	gc.Lock()
 	defer gc.Unlock()
 
+	var chaincodes []*proto.Chaincode
+	var leftChannel bool
+	if prevMsg := gc.stateInfoMsg; prevMsg != nil {
+		leftChannel = prevMsg.GetStateInfo().Properties.LeftChannel
+		chaincodes = prevMsg.GetStateInfo().Properties.Chaincodes
+	}
+	gc.updateProperties(height, chaincodes, leftChannel)
+}
+
+// UpdateChaincodes updates the chaincodes the peer publishes
+// to other peers in the channel
+func (gc *gossipChannel) UpdateChaincodes(chaincodes []*proto.Chaincode) {
+	gc.Lock()
+	defer gc.Unlock()
+
+	var ledgerHeight uint64 = 1
+	var leftChannel bool
+	if prevMsg := gc.stateInfoMsg; prevMsg != nil {
+		ledgerHeight = prevMsg.GetStateInfo().Properties.LedgerHeight
+		leftChannel = prevMsg.GetStateInfo().Properties.LeftChannel
+	}
+	gc.updateProperties(ledgerHeight, chaincodes, leftChannel)
+}
+
+// UpdateStateInfo updates this channel's StateInfo message
+// that is periodically published
+func (gc *gossipChannel) updateStateInfo(msg *proto.SignedGossipMessage) {
 	gc.stateInfoMsgStore.Add(msg)
 	gc.ledgerHeight = msg.GetStateInfo().Properties.LedgerHeight
 	gc.stateInfoMsg = msg
 	atomic.StoreInt32(&gc.shouldGossipStateInfo, int32(1))
+}
+
+func (gc *gossipChannel) updateProperties(ledgerHeight uint64, chaincodes []*proto.Chaincode, leftChannel bool) {
+	stateInfMsg := &proto.StateInfo{
+		Channel_MAC: GenerateMAC(gc.pkiID, gc.chainID),
+		PkiId:       gc.pkiID,
+		Timestamp: &proto.PeerTime{
+			IncNum: gc.incTime,
+			SeqNum: uint64(time.Now().UnixNano()),
+		},
+		Properties: &proto.Properties{
+			LeftChannel:  leftChannel,
+			LedgerHeight: ledgerHeight,
+			Chaincodes:   chaincodes,
+		},
+	}
+	m := &proto.GossipMessage{
+		Nonce: 0,
+		Tag:   proto.GossipMessage_CHAN_OR_ORG,
+		Content: &proto.GossipMessage_StateInfo{
+			StateInfo: stateInfMsg,
+		},
+	}
+
+	msg, err := gc.Sign(m)
+	if err != nil {
+		gc.logger.Error("Failed signing message:", err)
+		return
+	}
+	gc.updateStateInfo(msg)
 }
 
 func newStateInfoCache(sweepInterval time.Duration, hasExpired func(interface{}) bool, verifyFunc membershipPredicate) *stateInfoCache {

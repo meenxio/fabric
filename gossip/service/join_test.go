@@ -64,7 +64,15 @@ func (*gossipMock) UpdateMetadata(metadata []byte) {
 	panic("implement me")
 }
 
-func (*gossipMock) UpdateChannelMetadata(metadata []byte, chainID common.ChainID) {
+// UpdateLedgerHeight updates the ledger height the peer
+// publishes to other peers in the channel
+func (*gossipMock) UpdateLedgerHeight(height uint64, chainID common.ChainID) {
+	panic("implement me")
+}
+
+// UpdateChaincodes updates the chaincodes the peer publishes
+// to other peers in the channel
+func (*gossipMock) UpdateChaincodes(chaincode []*proto.Chaincode, chainID common.ChainID) {
 	panic("implement me")
 }
 
@@ -112,6 +120,10 @@ type configMock struct {
 	orgs2AppOrgs map[string]channelconfig.ApplicationOrg
 }
 
+func (c *configMock) OrdererAddresses() []string {
+	return []string{"localhost:7050"}
+}
+
 func (*configMock) ChainID() string {
 	return "A"
 }
@@ -135,7 +147,7 @@ func TestJoinChannelConfig(t *testing.T) {
 		failChan <- struct{}{}
 	})
 	g1 := &gossipServiceImpl{secAdv: &secAdvMock{}, peerIdentity: api.PeerIdentityType("OrgMSP0"), gossipSvc: g1SvcMock}
-	g1.configUpdated(&configMock{
+	g1.updateAnchors(&configMock{
 		orgs2AppOrgs: map[string]channelconfig.ApplicationOrg{
 			"Org0": &appOrgMock{id: "Org0"},
 		},
@@ -152,7 +164,7 @@ func TestJoinChannelConfig(t *testing.T) {
 		succChan <- struct{}{}
 	})
 	g2 := &gossipServiceImpl{secAdv: &secAdvMock{}, peerIdentity: api.PeerIdentityType("Org0"), gossipSvc: g2SvcMock}
-	g2.configUpdated(&configMock{
+	g2.updateAnchors(&configMock{
 		orgs2AppOrgs: map[string]channelconfig.ApplicationOrg{
 			"Org0": &appOrgMock{id: "Org0"},
 		},
@@ -192,7 +204,7 @@ func TestJoinChannelNoAnchorPeers(t *testing.T) {
 	assert.Empty(t, appOrg0.AnchorPeers())
 	assert.Empty(t, appOrg1.AnchorPeers())
 
-	g.configUpdated(&configMock{
+	g.updateAnchors(&configMock{
 		orgs2AppOrgs: map[string]channelconfig.ApplicationOrg{
 			"Org0": appOrg0,
 			"Org1": appOrg1,

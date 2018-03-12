@@ -12,12 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/localmsp"
+	"github.com/hyperledger/fabric/common/tools/configtxgen/encoder"
 	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
-	"github.com/hyperledger/fabric/msp"
-	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
-	"github.com/hyperledger/fabric/orderer/common/localconfig"
+
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
 	protosutils "github.com/hyperledger/fabric/protos/utils"
@@ -28,28 +26,9 @@ const (
 	Kilo = 1024 // TODO Consider adding a unit pkg
 )
 
-var conf *config.TopLevel
-var signer msp.SigningIdentity
-
 var letterRunes = []rune("abcdefghijklmnopqrstuvwxyz")
 
-func init() {
-	rand.Seed(time.Now().UnixNano())
-
-	conf = config.Load()
-
-	// Load local MSP
-	err := mspmgmt.LoadLocalMsp(conf.General.LocalMSPDir, conf.General.BCCSP, conf.General.LocalMSPID)
-	if err != nil {
-		panic(fmt.Errorf("Failed to initialize local MSP: %s", err))
-	}
-
-	msp := mspmgmt.GetLocalMSP()
-	signer, err = msp.GetDefaultSigningIdentity()
-	if err != nil {
-		panic(fmt.Errorf("Failed to get default signer: %s", err))
-	}
-}
+var seedOnce sync.Once
 
 // MakeNormalTx creates a properly signed transaction that could be used against `broadcast` API
 func MakeNormalTx(channelID string, size int) *cb.Envelope {
@@ -98,6 +77,8 @@ func OrdererExec(f func(s *BenchmarkServer)) {
 
 // RandomID generates a random string of num chars
 func RandomID(num int) string {
+	seedOnce.Do(func() { rand.Seed(time.Now().UnixNano()) })
+
 	b := make([]rune, num)
 	for i := range b {
 		b[i] = letterRunes[rand.Intn(len(letterRunes))]
@@ -106,19 +87,19 @@ func RandomID(num int) string {
 }
 
 // CreateChannel creates a channel with randomly generated ID of length 10
-func CreateChannel(server *BenchmarkServer) string {
+func CreateChannel(server *BenchmarkServer, channelProfile *genesisconfig.Profile) string {
 	client := server.CreateBroadcastClient()
 	defer client.Close()
 
 	channelID := RandomID(10)
-	createChannelTx, _ := channelconfig.MakeChainCreationTransaction(
-		channelID,
-		genesisconfig.SampleConsortiumName,
-		signer,
-		genesisconfig.SampleOrgName)
+	createChannelTx, err := encoder.MakeChannelCreationTransaction(channelID, localmsp.NewSigner(), nil, channelProfile)
+	if err != nil {
+		logger.Panicf("Failed to create channel creation transaction: %s", err)
+	}
 	client.SendRequest(createChannelTx)
-	if client.GetResponse().Status != cb.Status_SUCCESS {
-		logger.Panicf("Failed to create channel: %s", channelID)
+	response := client.GetResponse()
+	if response.Status != cb.Status_SUCCESS {
+		logger.Panicf("Failed to create channel: %s -- %v:%s", channelID, response.Status, response.Info)
 	}
 	return channelID
 }

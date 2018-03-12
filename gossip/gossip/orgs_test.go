@@ -112,8 +112,8 @@ func newGossipInstanceWithExternalEndpoint(portPrefix int, id int, mcs *configur
 		PublishStateInfoInterval:   time.Duration(1) * time.Second,
 		RequestStateInfoInterval:   time.Duration(1) * time.Second,
 	}
-	selfId := api.PeerIdentityType(conf.InternalEndpoint)
-	g := NewGossipServiceWithServer(conf, mcs, mcs, selfId,
+	selfID := api.PeerIdentityType(conf.InternalEndpoint)
+	g := NewGossipServiceWithServer(conf, mcs, mcs, selfID,
 		nil)
 
 	return g
@@ -207,7 +207,7 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 	for _, peers := range orgs2Peers {
 		for _, p := range peers {
 			p.JoinChan(jcm, channel)
-			p.UpdateChannelMetadata(createMetadata(1), channel)
+			p.UpdateLedgerHeight(1, channel)
 		}
 	}
 
@@ -276,7 +276,7 @@ func TestConfidentiality(t *testing.T) {
 	// from a peer in org Y about a peer in org Z not in {X, Y}
 	// or if any org other than orgB knows peers in orgD (and vice versa).
 
-	portPrefix := 12610
+	portPrefix := 42610
 	peersInOrg := 3
 	externalEndpointsInOrg := 2
 
@@ -398,11 +398,11 @@ func TestConfidentiality(t *testing.T) {
 			if isOrgInChan(org, ch) {
 				for _, p := range peers {
 					p.JoinChan(joinChanMsgsByChan[ch], common.ChainID(ch))
-					p.UpdateChannelMetadata(createMetadata(1), common.ChainID(ch))
+					p.UpdateLedgerHeight(1, common.ChainID(ch))
 					go func(p Gossip) {
 						for i := 0; i < 5; i++ {
 							time.Sleep(time.Second)
-							p.UpdateChannelMetadata(createMetadata(1), common.ChainID(ch))
+							p.UpdateLedgerHeight(1, common.ChainID(ch))
 						}
 					}(p)
 				}

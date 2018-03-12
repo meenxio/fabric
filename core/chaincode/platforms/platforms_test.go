@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package platforms
@@ -118,7 +108,7 @@ func GetPathErr(str string) string {
 	return ""
 }
 
-func VGetBoolErr(str string) bool {
+func VGetBoolFalse(str string) bool {
 	return false
 }
 
@@ -130,7 +120,7 @@ func GetPathOk(str string) string {
 	return "OK"
 }
 
-func VGetBoolOk(str string) bool {
+func VGetBoolTrue(str string) bool {
 	return true
 }
 
@@ -141,58 +131,6 @@ func OSStatOk(str string) (os.FileInfo, error) {
 
 func IOUtilReadFile(str string) ([]byte, error) {
 	return []byte("Stub"), nil
-}
-func TestGetPeerTLSCert(t *testing.T) {
-	oldGetPath := _GetPath
-	oldVGetBool := _VGetBool
-	oldOSStat := _OSStat
-	oldIOUtilReadFile := _IOUtilReadFile
-	defer func() {
-		_GetPath = oldGetPath
-		_VGetBool = oldVGetBool
-		_OSStat = oldOSStat
-		_IOUtilReadFile = oldIOUtilReadFile
-	}()
-
-	_GetPath = GetPathErr
-	_VGetBool = VGetBoolErr
-	_OSStat = OSStatOk
-	_IOUtilReadFile = IOUtilReadFile
-
-	response, err := getPeerTLSCert()
-
-	assert.Nil(t, response, "Response should have been nil")
-	assert.Nil(t, err, "err should have been nil")
-
-	_GetPath = GetPathOk
-	_VGetBool = VGetBoolOk
-	_OSStat = OSStatOk
-	_IOUtilReadFile = IOUtilReadFile
-
-	response, err = getPeerTLSCert()
-
-	assert.Nil(t, err, "Err should have been nil")
-	assert.NotNil(t, response, "Response should not  have been nil")
-
-	_VGetBool = VGetBoolOk
-	_GetPath = GetPathErr
-	_OSStat = OSStatOk
-	_IOUtilReadFile = IOUtilReadFile
-
-	response, err = getPeerTLSCert()
-
-	assert.Nil(t, err, "Err should have been nil")
-	assert.NotNil(t, response, "Response should not have been nil")
-
-	_VGetBool = VGetBoolOk
-	_GetPath = GetPathOk
-	_OSStat = OSStatErr
-	_IOUtilReadFile = IOUtilReadFile
-
-	response, err = getPeerTLSCert()
-
-	assert.NotNil(t, err, "Err should not have been nil")
-	assert.Nil(t, response, "Response should have been nil")
 }
 
 //END getPeerTLSCert tests
@@ -221,12 +159,12 @@ func TestGenerateDockerfile(t *testing.T) {
 			},
 		},
 	}
-	response, err := generateDockerfile(mockPlatform, fakeChaincodeSpec, false)
+	response, err := generateDockerfile(mockPlatform, fakeChaincodeSpec)
 	assert.NotNil(t, err, "Error should have been set")
 	assert.Nil(t, response, "Response should not have been set")
 
 	mockPlatformOk := &FakePlatformOk{}
-	response, err = generateDockerfile(mockPlatformOk, fakeChaincodeSpec, false)
+	response, err = generateDockerfile(mockPlatformOk, fakeChaincodeSpec)
 	assert.Nil(t, err, "Error should not have been set")
 	assert.NotNil(t, response, "Response should not have been set")
 
@@ -247,12 +185,7 @@ func TestGenerateDockerfile(t *testing.T) {
 		"Should return the correct values when TLS is not enabled",
 	)
 
-	const guestTLSPath = "/etc/hyperledger/fabric/peer.crt"
-
-	buf = append(buf, "ENV CORE_PEER_TLS_ROOTCERT_FILE="+guestTLSPath)
-	buf = append(buf, "COPY peer.crt "+guestTLSPath)
-
-	response, err = generateDockerfile(mockPlatformOk, fakeChaincodeSpec, true)
+	response, err = generateDockerfile(mockPlatformOk, fakeChaincodeSpec)
 	contents = strings.Join(buf, "\n")
 	assert.Equal(
 		t,
@@ -338,7 +271,7 @@ func getPeerTLSCertErr() ([]byte, error) {
 	return nil, errors.New("error")
 }
 
-func generateDockerfileErr(platform Platform, cds *pb.ChaincodeDeploymentSpec, tls bool) ([]byte, error) {
+func generateDockerfileErr(platform Platform, cds *pb.ChaincodeDeploymentSpec) ([]byte, error) {
 	return nil, errors.New("error")
 }
 
@@ -349,12 +282,10 @@ func generateDockerBuildErr(platform Platform, cds *pb.ChaincodeDeploymentSpec, 
 func TestGenerateDockerBuild2(t *testing.T) {
 
 	oldFind := _Find
-	oldGetPeerTLSCert := _getPeerTLSCert
 	oldGenerateDockerfile := _generateDockerfile
 	oldGenerateDockerBuild := _generateDockerBuild
 	defer func() {
 		_Find = oldFind
-		_getPeerTLSCert = oldGetPeerTLSCert
 		_generateDockerfile = oldGenerateDockerfile
 		_generateDockerBuild = oldGenerateDockerBuild
 	}()
@@ -381,16 +312,8 @@ func TestGenerateDockerBuild2(t *testing.T) {
 	assert.Nil(t, io, "io should be nil")
 	assert.NotNil(t, err, "error should not be nil")
 
-	// Error from getPeerTLSCert
-	_Find = oldFind
-	_getPeerTLSCert = getPeerTLSCertErr
-	io, err = GenerateDockerBuild(fakeChaincodeSpec)
-	assert.Nil(t, io, "io should be nil")
-	assert.NotNil(t, err, "error should not be nil")
-
 	// Error from generateDockerfile
 	_Find = oldFind
-	_getPeerTLSCert = oldGetPeerTLSCert
 	_generateDockerfile = generateDockerfileErr
 	io, err = GenerateDockerBuild(fakeChaincodeSpec)
 	assert.Nil(t, io, "io should be nil")
@@ -398,7 +321,6 @@ func TestGenerateDockerBuild2(t *testing.T) {
 
 	// Error from generateDockerBuild
 	_Find = oldFind
-	_getPeerTLSCert = oldGetPeerTLSCert
 	_generateDockerfile = oldGenerateDockerfile
 	_generateDockerBuild = generateDockerBuildErr
 	io, err = GenerateDockerBuild(fakeChaincodeSpec)

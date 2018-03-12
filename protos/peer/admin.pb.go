@@ -30,7 +30,9 @@ It has these top-level messages:
 	ChaincodeInvocationSpec
 	ChaincodeEvent
 	ChaincodeMessage
-	PutStateInfo
+	GetState
+	PutState
+	DelState
 	GetStateByRange
 	GetQueryResult
 	GetHistoryForKey
@@ -45,8 +47,13 @@ It has these top-level messages:
 	Register
 	Rejection
 	Unregister
+	FilteredBlock
+	FilteredTransaction
+	FilteredTransactionActions
+	FilteredChaincodeAction
 	SignedEvent
 	Event
+	DeliverResponse
 	PeerID
 	PeerEndpoint
 	SignedProposal
@@ -62,7 +69,12 @@ It has these top-level messages:
 	ChaincodeInfo
 	ChannelQueryResponse
 	ChannelInfo
-	Resource
+	APIResource
+	ChaincodeIdentifier
+	ChaincodeValidation
+	VSCCArgs
+	ChaincodeEndorsement
+	ConfigTree
 	SignedChaincodeDeploymentSpec
 	SignedTransaction
 	ProcessedTransaction

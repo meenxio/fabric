@@ -10,11 +10,10 @@ import (
 	"io"
 
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/orderer/common/msgprocessor"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
-
-	"github.com/hyperledger/fabric/orderer/common/util"
 	"github.com/op/go-logging"
 	"github.com/pkg/errors"
 )
@@ -56,6 +55,13 @@ type Consenter interface {
 	// Configure accepts a reconfiguration or returns an error indicating the cause of failure
 	// It ultimately passes through to the consensus.Chain interface
 	Configure(config *cb.Envelope, configSeq uint64) error
+
+	// WaitReady blocks waiting for consenter to be ready for accepting new messages.
+	// This is useful when consenter needs to temporarily block ingress messages so
+	// that in-flight messages can be consumed. It could return error if consenter is
+	// in erroneous states. If this blocking behavior is not desired, consenter could
+	// simply return nil.
+	WaitReady() error
 }
 
 type handlerImpl struct {
@@ -88,6 +94,11 @@ func (bh *handlerImpl) Handle(srv ab.AtomicBroadcast_BroadcastServer) error {
 		if err != nil {
 			logger.Warningf("[channel: %s] Could not get message processor for serving %s: %s", chdr.ChannelId, addr, err)
 			return srv.Send(&ab.BroadcastResponse{Status: cb.Status_INTERNAL_SERVER_ERROR, Info: err.Error()})
+		}
+
+		if err = processor.WaitReady(); err != nil {
+			logger.Warningf("[channel: %s] Rejecting broadcast of message from %s with SERVICE_UNAVAILABLE: rejected by Consenter: %s", chdr.ChannelId, addr, err)
+			return srv.Send(&ab.BroadcastResponse{Status: cb.Status_SERVICE_UNAVAILABLE, Info: err.Error()})
 		}
 
 		if !isConfig {

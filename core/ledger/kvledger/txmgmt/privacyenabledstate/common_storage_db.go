@@ -10,6 +10,8 @@ import (
 	"encoding/base64"
 	"fmt"
 
+	"github.com/hyperledger/fabric/core/ledger/cceventmgmt"
+
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb/statecouchdb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb/stateleveldb"
@@ -18,7 +20,7 @@ import (
 )
 
 const (
-	nsJoiner       = "/"
+	nsJoiner       = "$$"
 	pvtDataPrefix  = "p"
 	hashDataPrefix = "h"
 )
@@ -70,24 +72,22 @@ func NewCommonStorageDB(vdb statedb.VersionedDB, ledgerid string) (DB, error) {
 
 // IsBulkOptimizable implements corresponding function in interface DB
 func (s *CommonStorageDB) IsBulkOptimizable() bool {
-	if _, ok := s.VersionedDB.(statedb.BulkOptimizable); ok {
-		return true
-	}
-	return false
+	_, ok := s.VersionedDB.(statedb.BulkOptimizable)
+	return ok
 }
 
 // LoadCommittedVersionsOfPubAndHashedKeys implements corresponding function in interface DB
 func (s *CommonStorageDB) LoadCommittedVersionsOfPubAndHashedKeys(pubKeys []*statedb.CompositeKey,
-	hashedKeys []*HashedCompositeKey) {
+	hashedKeys []*HashedCompositeKey) error {
 
 	bulkOptimizable, ok := s.VersionedDB.(statedb.BulkOptimizable)
 	if !ok {
-		return
+		return nil
 	}
 
 	// Here, hashedKeys are merged into pubKeys to get a combined set of keys for combined loading
 	for _, key := range hashedKeys {
-		ns := derivePvtDataNs(key.Namespace, key.CollectionName)
+		ns := deriveHashedDataNs(key.Namespace, key.CollectionName)
 		// No need to check for duplicates as hashedKeys are in separate namespace
 		var keyHashStr string
 		if !s.BytesKeySuppoted() {
@@ -101,15 +101,29 @@ func (s *CommonStorageDB) LoadCommittedVersionsOfPubAndHashedKeys(pubKeys []*sta
 		})
 	}
 
-	bulkOptimizable.LoadCommittedVersions(pubKeys)
+	err := bulkOptimizable.LoadCommittedVersions(pubKeys)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
-// ClearCommittedVersions implements corresponding function in interface DB
-func (s *CommonStorageDB) ClearCommittedVersions() {
+// ClearCachedVersions implements corresponding function in interface DB
+func (s *CommonStorageDB) ClearCachedVersions() {
 	bulkOptimizable, ok := s.VersionedDB.(statedb.BulkOptimizable)
 	if ok {
 		bulkOptimizable.ClearCachedVersions()
 	}
+}
+
+// GetChaincodeEventListener implements corresponding function in interface DB
+func (s *CommonStorageDB) GetChaincodeEventListener() cceventmgmt.ChaincodeLifecycleEventListener {
+	ccListener, ok := s.VersionedDB.(cceventmgmt.ChaincodeLifecycleEventListener)
+	if ok {
+		return ccListener
+	}
+	return nil
 }
 
 // GetPrivateData implements corresponding function in interface DB
@@ -126,13 +140,27 @@ func (s *CommonStorageDB) GetValueHash(namespace, collection string, keyHash []b
 	return s.GetState(deriveHashedDataNs(namespace, collection), keyHashStr)
 }
 
-// GetHashedDataNsAndKeyHashStr implements corresponding function in interface DB
+// GetKeyHashVersion implements corresponding function in interface DB
 func (s *CommonStorageDB) GetKeyHashVersion(namespace, collection string, keyHash []byte) (*version.Height, error) {
 	keyHashStr := string(keyHash)
 	if !s.BytesKeySuppoted() {
 		keyHashStr = base64.StdEncoding.EncodeToString(keyHash)
 	}
 	return s.GetVersion(deriveHashedDataNs(namespace, collection), keyHashStr)
+}
+
+// GetCachedKeyHashVersion retrieves the keyhash version from cache
+func (s *CommonStorageDB) GetCachedKeyHashVersion(namespace, collection string, keyHash []byte) (*version.Height, bool) {
+	bulkOptimizable, ok := s.VersionedDB.(statedb.BulkOptimizable)
+	if !ok {
+		return nil, false
+	}
+
+	keyHashStr := string(keyHash)
+	if !s.BytesKeySuppoted() {
+		keyHashStr = base64.StdEncoding.EncodeToString(keyHash)
+	}
+	return bulkOptimizable.GetCachedVersion(deriveHashedDataNs(namespace, collection), keyHashStr)
 }
 
 // GetPrivateDataMultipleKeys implements corresponding function in interface DB

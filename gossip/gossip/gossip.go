@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package gossip
 
 import (
-	"crypto/tls"
+	"fmt"
 	"time"
 
 	"github.com/hyperledger/fabric/gossip/api"
@@ -38,9 +38,13 @@ type Gossip interface {
 	// the peer publishes to other peers
 	UpdateMetadata(metadata []byte)
 
-	// UpdateChannelMetadata updates the self metadata the peer
-	// publishes to other peers about its channel-related state
-	UpdateChannelMetadata(metadata []byte, chainID common.ChainID)
+	// UpdateLedgerHeight updates the ledger height the peer
+	// publishes to other peers in the channel
+	UpdateLedgerHeight(height uint64, chainID common.ChainID)
+
+	// UpdateChaincodes updates the chaincodes the peer publishes
+	// to other peers in the channel
+	UpdateChaincodes(chaincode []*proto.Chaincode, chainID common.ChainID)
 
 	// Gossip sends a message to other peers to the network
 	Gossip(msg *proto.GossipMessage)
@@ -72,6 +76,13 @@ type Gossip interface {
 	Stop()
 }
 
+// emittedGossipMessage encapsulates signed gossip message to compose
+// with routing filter to be used while message is forwarded
+type emittedGossipMessage struct {
+	*proto.SignedGossipMessage
+	filter func(id common.PKIidType) bool
+}
+
 // SendCriteria defines how to send a specific message
 type SendCriteria struct {
 	Timeout    time.Duration        // Timeout defines the time to wait for acknowledgements
@@ -80,6 +91,11 @@ type SendCriteria struct {
 	IsEligible filter.RoutingFilter // IsEligible defines whether a specific peer is eligible of receiving the message
 	Channel    common.ChainID       // Channel specifies a channel to send this message on. \
 	// Only peers that joined the channel would receive this message
+}
+
+// String returns a string representation of this SendCriteria
+func (sc SendCriteria) String() string {
+	return fmt.Sprintf("channel: %s, tout: %v, minAck: %d, maxPeers: %d", sc.Channel, sc.Timeout, sc.MinAck, sc.MaxPeers)
 }
 
 // Config is the configuration of the gossip component
@@ -100,10 +116,11 @@ type Config struct {
 
 	SkipBlockVerification bool // Should we skip verifying block messages or not
 
-	PublishCertPeriod        time.Duration    // Time from startup certificates are included in Alive messages
-	PublishStateInfoInterval time.Duration    // Determines frequency of pushing state info messages to peers
-	RequestStateInfoInterval time.Duration    // Determines frequency of pulling state info messages from peers
-	TLSServerCert            *tls.Certificate // TLS certificate of the peer
+	PublishCertPeriod        time.Duration // Time from startup certificates are included in Alive messages
+	PublishStateInfoInterval time.Duration // Determines frequency of pushing state info messages to peers
+	RequestStateInfoInterval time.Duration // Determines frequency of pulling state info messages from peers
+
+	TLSCerts *common.TLSCertificates // TLS certificates of the peer
 
 	InternalEndpoint string // Endpoint we publish to peers in our organization
 	ExternalEndpoint string // Peer publishes this endpoint instead of SelfEndpoint to foreign organizations

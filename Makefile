@@ -6,8 +6,8 @@
 # -------------------------------------------------------------
 # This makefile defines the following targets
 #
-#   - all (default) - builds all targets and runs all tests/checks
-#   - checks - runs all tests/checks
+#   - all (default) - builds all targets and runs all non-integration tests/checks
+#   - checks - runs all non-integration tests/checks
 #   - desk-check - runs linters and verify to test changed packages
 #   - configtxgen - builds a native configtxgen binary
 #   - configtxlator - builds a native configtxlator binary
@@ -18,6 +18,7 @@
 #   - release-all - builds release packages for all target platforms
 #   - unit-test - runs the go-test based unit tests
 #   - verify - runs unit tests for only the changed package tree
+#   - profile - runs unit tests for all packages in coverprofile mode (slow)
 #   - test-cmd - generates a "go test" string suitable for manual customization
 #   - behave - runs the behave test
 #   - behave-deps - ensures pre-requisites are available for running behave manually
@@ -34,10 +35,24 @@
 #   - clean-all - superset of 'clean' that also removes persistent state
 #   - dist-clean - clean release packages for all target platforms
 #   - unit-test-clean - cleans unit test state (particularly from docker)
+#   - basic-checks - performs basic checks like license, spelling and linter
+#   - enable_ci_only_tests - triggers unit-tests in downstream jobs. Applicable only for CI not to
+#     use in the local machine.
+#   - docker-thirdparty - pulls thirdparty images (kafka,zookeeper,couchdb)
 
-PROJECT_NAME   = hyperledger/fabric
 BASE_VERSION = 1.1.0
-PREV_VERSION = 1.0.0
+PREV_VERSION = 1.1.0-rc1
+CHAINTOOL_RELEASE=1.0.1
+BASEIMAGE_RELEASE=0.4.6
+
+# Allow to build as a submodule setting the main project to
+# the PROJECT_NAME env variable, for example,
+# export PROJECT_NAME=hyperledger/fabric-test
+ifeq ($(PROJECT_NAME),true)
+PROJECT_NAME = $(PROJECT_NAME)/fabric
+else
+PROJECT_NAME = hyperledger/fabric
+endif
 IS_RELEASE = false
 EXPERIMENTAL ?= true
 
@@ -56,8 +71,6 @@ PKGNAME = github.com/$(PROJECT_NAME)
 CGO_FLAGS = CGO_CFLAGS=" "
 ARCH=$(shell uname -m)
 MARCH=$(shell go env GOOS)-$(shell go env GOARCH)
-CHAINTOOL_RELEASE=1.0.1
-BASEIMAGE_RELEASE=$(shell cat ./.baseimage-release)
 
 # defined in common/metadata/metadata.go
 METADATA_VAR = Version=$(PROJECT_VERSION)
@@ -88,7 +101,7 @@ PROJECT_FILES = $(shell git ls-files  | grep -v ^test | grep -v ^unit-test | \
 	grep -v ^.git | grep -v ^examples | grep -v ^devenv | grep -v .png$ | \
 	grep -v ^LICENSE )
 RELEASE_TEMPLATES = $(shell git ls-files | grep "release/templates")
-IMAGES = peer orderer ccenv javaenv buildenv testenv zookeeper kafka couchdb tools
+IMAGES = peer orderer ccenv javaenv buildenv testenv tools
 RELEASE_PLATFORMS = windows-amd64 darwin-amd64 linux-amd64 linux-ppc64le linux-s390x
 RELEASE_PKGS = configtxgen cryptogen configtxlator peer orderer
 
@@ -98,15 +111,26 @@ pkgmap.configtxlator  := $(PKGNAME)/common/tools/configtxlator
 pkgmap.peer           := $(PKGNAME)/peer
 pkgmap.orderer        := $(PKGNAME)/orderer
 pkgmap.block-listener := $(PKGNAME)/examples/events/block-listener
-pkgmap.cryptogen      := $(PKGNAME)/common/tools/cryptogen
 
 include docker-env.mk
 
 all: native docker checks
 
-checks: license spelling linter unit-test behave
+checks: license spelling linter unit-test
 
-desk-check: license spelling linter verify behave
+basic-checks: license spelling linter
+
+desk-check: license spelling linter verify
+
+# Pull thirdparty docker images based on the latest baseimage release version
+.PHONY: docker-thirdparty
+docker-thirdparty:
+	docker pull $(DOCKER_NS)/fabric-couchdb:$(BASE_DOCKER_TAG)
+	docker tag $(DOCKER_NS)/fabric-couchdb:$(BASE_DOCKER_TAG) $(DOCKER_NS)/fabric-couchdb
+	docker pull $(DOCKER_NS)/fabric-zookeeper:$(BASE_DOCKER_TAG)
+	docker tag $(DOCKER_NS)/fabric-zookeeper:$(BASE_DOCKER_TAG) $(DOCKER_NS)/fabric-zookeeper
+	docker pull $(DOCKER_NS)/fabric-kafka:$(BASE_DOCKER_TAG)
+	docker tag $(DOCKER_NS)/fabric-kafka:$(BASE_DOCKER_TAG) $(DOCKER_NS)/fabric-kafka
 
 .PHONY: spelling
 spelling:
@@ -157,25 +181,26 @@ buildenv: build/image/buildenv/$(DUMMY)
 build/image/testenv/$(DUMMY): build/image/buildenv/$(DUMMY)
 testenv: build/image/testenv/$(DUMMY)
 
-couchdb: build/image/couchdb/$(DUMMY)
-
-kafka: build/image/kafka/$(DUMMY)
-
-zookeeper: build/image/zookeeper/$(DUMMY)
-
-unit-test: unit-test-clean peer-docker testenv couchdb
+unit-test: unit-test-clean peer-docker testenv
 	cd unit-test && docker-compose up --abort-on-container-exit --force-recreate && docker-compose down
 
 unit-tests: unit-test
 
-verify: unit-test-clean peer-docker testenv couchdb
+enable_ci_only_tests: testenv
+	cd unit-test && docker-compose up --abort-on-container-exit --force-recreate && docker-compose down
+
+verify: unit-test-clean peer-docker testenv
 	cd unit-test && JOB_TYPE=VERIFY docker-compose up --abort-on-container-exit --force-recreate && docker-compose down
+
+profile: unit-test-clean peer-docker testenv
+	cd unit-test && JOB_TYPE=PROFILE docker-compose up --abort-on-container-exit --force-recreate && docker-compose down
 
 # Generates a string to the terminal suitable for manual augmentation / re-issue, useful for running tests by hand
 test-cmd:
 	@echo "go test -tags \"$(GO_TAGS)\" -ldflags \"$(GO_LDFLAGS)\""
 
-docker: $(patsubst %,build/image/%/$(DUMMY), $(IMAGES))
+docker: docker-thirdparty $(patsubst %,build/image/%/$(DUMMY), $(IMAGES))
+
 native: peer orderer configtxgen cryptogen configtxlator
 
 behave-deps: docker peer build/bin/block-listener configtxgen cryptogen
@@ -253,12 +278,6 @@ build/image/testenv/payload:    build/docker/bin/orderer \
 				build/docker/bin/peer \
 				build/sampleconfig.tar.bz2 \
 				images/testenv/install-softhsm2.sh
-build/image/zookeeper/payload:  images/zookeeper/docker-entrypoint.sh
-build/image/kafka/payload:      images/kafka/docker-entrypoint.sh \
-				images/kafka/kafka-run-class.sh
-build/image/couchdb/payload:	images/couchdb/docker-entrypoint.sh \
-				images/couchdb/local.ini \
-				images/couchdb/vm.args
 build/image/tools/payload:      build/docker/bin/cryptogen \
 	                        build/docker/bin/configtxgen \
 	                        build/docker/bin/configtxlator \
@@ -354,6 +373,8 @@ release/%/bin/cryptogen: $(PROJECT_FILES)
 	mkdir -p $(@D)
 	$(CGO_FLAGS) GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o $(abspath $@) -tags "$(GO_TAGS)" -ldflags "$(GO_LDFLAGS)" $(pkgmap.$(@F))
 
+release/%/bin/orderer: GO_LDFLAGS = $(patsubst %,-X $(PKGNAME)/common/metadata.%,$(METADATA_VAR))
+
 release/%/bin/orderer: $(PROJECT_FILES)
 	@echo "Building $@ for $(GOOS)-$(GOARCH)"
 	mkdir -p $(@D)
@@ -377,25 +398,14 @@ release/%/install: $(PROJECT_FILES)
 		@chmod +x $(@D)/bin/get-docker-images.sh
 
 .PHONY: dist
-dist: dist-clean release
-	cd release/$(MARCH) && tar -czvf hyperledger-fabric-$(MARCH).$(PROJECT_VERSION).tar.gz *
+dist: dist-clean dist/$(MARCH)
 
-dist-all: dist-clean release-all $(patsubst %,dist/%, $(RELEASE_PLATFORMS))
+dist-all: dist-clean $(patsubst %,dist/%, $(RELEASE_PLATFORMS))
 
-dist/windows-amd64:
-	cd release/windows-amd64 && tar -czvf hyperledger-fabric-windows-amd64.$(PROJECT_VERSION).tar.gz *
-
-dist/darwin-amd64:
-	cd release/darwin-amd64 && tar -czvf hyperledger-fabric-darwin-amd64.$(PROJECT_VERSION).tar.gz *
-
-dist/linux-amd64:
-	cd release/linux-amd64 && tar -czvf hyperledger-fabric-linux-amd64.$(PROJECT_VERSION).tar.gz *
-
-dist/linux-ppc64le:
-	cd release/linux-ppc64le && tar -czvf hyperledger-fabric-linux-ppc64le.$(PROJECT_VERSION).tar.gz *
-
-dist/linux-s390x:
-	cd release/linux-s390x && tar -czvf hyperledger-fabric-linux-s390x.$(PROJECT_VERSION).tar.gz *
+dist/%: release/%
+	mkdir -p release/$(@F)/config
+	cp -r sampleconfig/*.yaml release/$(@F)/config
+	cd release/$(@F) && tar -czvf hyperledger-fabric-$(@F).$(PROJECT_VERSION).tar.gz *
 
 .PHONY: protos
 protos: buildenv
@@ -413,7 +423,7 @@ clean: docker-clean unit-test-clean release-clean
 	-@rm -rf build ||:
 
 .PHONY: clean-all
-clean-all: clean gotools-clean dist-clean release-clean unit-test-clean
+clean-all: clean gotools-clean dist-clean
 	-@rm -rf /var/hyperledger/* ||:
 
 .PHONY: dist-clean

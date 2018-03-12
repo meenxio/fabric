@@ -52,8 +52,9 @@ func CreateStandardChannelFilters(filterSupport channelconfig.Resources) *RuleSe
 	}
 	return NewRuleSet([]Rule{
 		EmptyRejectRule,
+		NewExpirationRejectRule(filterSupport),
 		NewSizeFilter(ordererConfig),
-		NewSigFilter(policies.ChannelWriters, filterSupport.PolicyManager()),
+		NewSigFilter(policies.ChannelWriters, filterSupport),
 	})
 }
 

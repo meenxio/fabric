@@ -68,8 +68,8 @@ func (vdb *versionedDB) Close() {
 	// do nothing because shared db is used
 }
 
-// ValidateKey implements method in VersionedDB interface
-func (vdb *versionedDB) ValidateKey(key string) error {
+// ValidateKeyValue implements method in VersionedDB interface
+func (vdb *versionedDB) ValidateKeyValue(key string, value []byte) error {
 	return nil
 }
 
@@ -154,7 +154,8 @@ func (vdb *versionedDB) ApplyUpdates(batch *statedb.UpdateBatch, height *version
 		}
 	}
 	dbBatch.Put(savePointKey, height.ToBytes())
-	if err := vdb.db.WriteBatch(dbBatch, false); err != nil {
+	// Setting snyc to true as a precaution, false may be an ok optimization after further testing.
+	if err := vdb.db.WriteBatch(dbBatch, true); err != nil {
 		return err
 	}
 	return nil

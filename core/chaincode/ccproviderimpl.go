@@ -22,7 +22,6 @@ import (
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/ledger"
 	pb "github.com/hyperledger/fabric/protos/peer"
-	"github.com/pkg/errors"
 )
 
 // ccProviderFactory implements the ccprovider.ChaincodeProviderFactory
@@ -43,7 +42,6 @@ func init() {
 
 // ccProviderImpl is an implementation of the ccprovider.ChaincodeProvider interface
 type ccProviderImpl struct {
-	txsim ledger.TxSimulator
 }
 
 // ccProviderContextImpl contains the state that is passed around to calls to methods of ccProviderImpl
@@ -52,15 +50,15 @@ type ccProviderContextImpl struct {
 }
 
 // GetContext returns a context for the supplied ledger, with the appropriate tx simulator
-func (c *ccProviderImpl) GetContext(ledger ledger.PeerLedger, txid string) (context.Context, error) {
+func (c *ccProviderImpl) GetContext(ledger ledger.PeerLedger, txid string) (context.Context, ledger.TxSimulator, error) {
 	var err error
 	// get context for the chaincode execution
-	c.txsim, err = ledger.NewTxSimulator(txid)
+	txsim, err := ledger.NewTxSimulator(txid)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	ctxt := context.WithValue(context.Background(), TXSimulatorKey, c.txsim)
-	return ctxt, nil
+	ctxt := context.WithValue(context.Background(), TXSimulatorKey, txsim)
+	return ctxt, txsim, nil
 }
 
 // GetCCContext returns an interface that encapsulates a
@@ -69,27 +67,6 @@ func (c *ccProviderImpl) GetContext(ledger ledger.PeerLedger, txid string) (cont
 func (c *ccProviderImpl) GetCCContext(cid, name, version, txid string, syscc bool, signedProp *pb.SignedProposal, prop *pb.Proposal) interface{} {
 	ctx := ccprovider.NewCCContext(cid, name, version, txid, syscc, signedProp, prop)
 	return &ccProviderContextImpl{ctx: ctx}
-}
-
-// GetCCValidationInfoFromLSCC returns the VSCC and the policy listed in LSCC for the supplied chaincode
-func (c *ccProviderImpl) GetCCValidationInfoFromLSCC(ctxt context.Context, txid string, signedProp *pb.SignedProposal, prop *pb.Proposal, chainID string, chaincodeID string) (string, []byte, error) {
-	// LSCC does not have any notion about its own
-	// endorsing policy - we should never call this
-	// function with lscc as the chaincodeID
-	if chaincodeID == "lscc" {
-		panic("GetCCValidationInfoFromLSCC invoke for LSCC")
-	}
-
-	data, err := GetChaincodeDataFromLSCC(ctxt, txid, signedProp, prop, chainID, chaincodeID)
-	if err != nil {
-		return "", nil, err
-	}
-
-	if data == nil || data.Vscc == "" || data.Policy == nil {
-		return "", nil, errors.New("incorrect validation info in LSCC")
-	}
-
-	return data.Vscc, data.Policy, nil
 }
 
 // ExecuteChaincode executes the chaincode specified in the context with the specified arguments
@@ -113,9 +90,4 @@ func (c *ccProviderImpl) Stop(ctxt context.Context, cccid interface{}, spec *pb.
 		return theChaincodeSupport.Stop(ctxt, cccid.(*ccProviderContextImpl).ctx, spec)
 	}
 	panic("ChaincodeSupport not initialized")
-}
-
-// ReleaseContext frees up resources held by the context
-func (c *ccProviderImpl) ReleaseContext() {
-	c.txsim.Done()
 }

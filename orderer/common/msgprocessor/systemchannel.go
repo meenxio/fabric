@@ -11,7 +11,6 @@ import (
 
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/configtx"
-	configtxapi "github.com/hyperledger/fabric/common/configtx/api"
 	"github.com/hyperledger/fabric/common/crypto"
 	"github.com/hyperledger/fabric/common/policies"
 	cb "github.com/hyperledger/fabric/protos/common"
@@ -23,7 +22,7 @@ import (
 // ChannelConfigTemplator can be used to generate config templates.
 type ChannelConfigTemplator interface {
 	// NewChannelConfig creates a new template configuration manager.
-	NewChannelConfig(env *cb.Envelope) (configtxapi.Manager, error)
+	NewChannelConfig(env *cb.Envelope) (channelconfig.Resources, error)
 }
 
 // SystemChannel implements the Processor interface for the system channel.
@@ -49,8 +48,9 @@ func CreateSystemChannelFilters(chainCreator ChainCreator, ledgerResources chann
 	}
 	return NewRuleSet([]Rule{
 		EmptyRejectRule,
+		NewExpirationRejectRule(ledgerResources),
 		NewSizeFilter(ordererConfig),
-		NewSigFilter(policies.ChannelWriters, ledgerResources.PolicyManager()),
+		NewSigFilter(policies.ChannelWriters, ledgerResources),
 		NewSystemChannelFilter(ledgerResources, chainCreator),
 	})
 }
@@ -95,12 +95,12 @@ func (s *SystemChannel) ProcessConfigUpdateMsg(envConfigUpdate *cb.Envelope) (co
 
 	// If the channel ID does not match the system channel, then this must be a channel creation transaction
 
-	ctxm, err := s.templator.NewChannelConfig(envConfigUpdate)
+	bundle, err := s.templator.NewChannelConfig(envConfigUpdate)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	newChannelConfigEnv, err := ctxm.ProposeConfigUpdate(envConfigUpdate)
+	newChannelConfigEnv, err := bundle.ConfigtxValidator().ProposeConfigUpdate(envConfigUpdate)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -185,8 +185,11 @@ type DefaultTemplatorSupport interface {
 	// ConsortiumsConfig returns the ordering system channel's Consortiums config.
 	ConsortiumsConfig() (channelconfig.Consortiums, bool)
 
-	// ConfigtxManager returns the configtx manager corresponding to the system channel's current config.
-	ConfigtxManager() configtxapi.Manager
+	// OrdererConfig returns the ordering configuration and whether the configuration exists
+	OrdererConfig() (channelconfig.Orderer, bool)
+
+	// ConfigtxValidator returns the configtx manager corresponding to the system channel's current config.
+	ConfigtxValidator() configtx.Validator
 
 	// Signer returns the local signer suitable for signing forwarded messages.
 	Signer() crypto.LocalSigner
@@ -205,7 +208,7 @@ func NewDefaultTemplator(support DefaultTemplatorSupport) *DefaultTemplator {
 }
 
 // NewChannelConfig creates a new template channel configuration based on the current config in the ordering system channel.
-func (dt *DefaultTemplator) NewChannelConfig(envConfigUpdate *cb.Envelope) (configtxapi.Manager, error) {
+func (dt *DefaultTemplator) NewChannelConfig(envConfigUpdate *cb.Envelope) (channelconfig.Resources, error) {
 	configUpdatePayload, err := utils.UnmarshalPayload(envConfigUpdate.Payload)
 	if err != nil {
 		return nil, fmt.Errorf("Failing initial channel config creation because of payload unmarshaling error: %s", err)
@@ -274,7 +277,7 @@ func (dt *DefaultTemplator) NewChannelConfig(envConfigUpdate *cb.Envelope) (conf
 	applicationGroup.ModPolicy = channelconfig.ChannelCreationPolicyKey
 
 	// Get the current system channel config
-	systemChannelGroup := dt.support.ConfigtxManager().ConfigEnvelope().Config.ChannelGroup
+	systemChannelGroup := dt.support.ConfigtxValidator().ConfigProto().ChannelGroup
 
 	// If the consortium group has no members, allow the source request to have no members.  However,
 	// if the consortium group has any members, there must be at least one member in the source request
@@ -291,7 +294,7 @@ func (dt *DefaultTemplator) NewChannelConfig(envConfigUpdate *cb.Envelope) (conf
 			if !ok {
 				return nil, fmt.Errorf("Attempted to include a member which is not in the consortium")
 			}
-			applicationGroup.Groups[orgName] = consortiumGroup
+			applicationGroup.Groups[orgName] = proto.Clone(consortiumGroup).(*cb.ConfigGroup)
 		}
 	}
 
@@ -299,7 +302,7 @@ func (dt *DefaultTemplator) NewChannelConfig(envConfigUpdate *cb.Envelope) (conf
 
 	// Copy the system channel Channel level config to the new config
 	for key, value := range systemChannelGroup.Values {
-		channelGroup.Values[key] = value
+		channelGroup.Values[key] = proto.Clone(value).(*cb.ConfigValue)
 		if key == channelconfig.ConsortiumKey {
 			// Do not set the consortium name, we do this later
 			continue
@@ -307,13 +310,23 @@ func (dt *DefaultTemplator) NewChannelConfig(envConfigUpdate *cb.Envelope) (conf
 	}
 
 	for key, policy := range systemChannelGroup.Policies {
-		channelGroup.Policies[key] = policy
+		channelGroup.Policies[key] = proto.Clone(policy).(*cb.ConfigPolicy)
 	}
 
 	// Set the new config orderer group to the system channel orderer group and the application group to the new application group
-	channelGroup.Groups[channelconfig.OrdererGroupKey] = systemChannelGroup.Groups[channelconfig.OrdererGroupKey]
+	channelGroup.Groups[channelconfig.OrdererGroupKey] = proto.Clone(systemChannelGroup.Groups[channelconfig.OrdererGroupKey]).(*cb.ConfigGroup)
 	channelGroup.Groups[channelconfig.ApplicationGroupKey] = applicationGroup
-	channelGroup.Values[channelconfig.ConsortiumKey] = channelconfig.TemplateConsortium(consortium.Name).Values[channelconfig.ConsortiumKey]
+	channelGroup.Values[channelconfig.ConsortiumKey] = &cb.ConfigValue{
+		Value:     utils.MarshalOrPanic(channelconfig.ConsortiumValue(consortium.Name).Value()),
+		ModPolicy: channelconfig.AdminsPolicyKey,
+	}
+
+	// Non-backwards compatible bugfix introduced in v1.1
+	// The capability check should be removed once v1.0 is deprecated
+	if oc, ok := dt.support.OrdererConfig(); ok && oc.Capabilities().PredictableChannelTemplate() {
+		channelGroup.ModPolicy = systemChannelGroup.ModPolicy
+		zeroVersions(channelGroup)
+	}
 
 	bundle, err := channelconfig.NewBundle(channelHeader.ChannelId, &cb.Config{
 		ChannelGroup: channelGroup,
@@ -323,5 +336,22 @@ func (dt *DefaultTemplator) NewChannelConfig(envConfigUpdate *cb.Envelope) (conf
 		return nil, err
 	}
 
-	return bundle.ConfigtxManager(), nil
+	return bundle, nil
+}
+
+// zeroVersions recursively iterates over a config tree, setting all versions to zero
+func zeroVersions(cg *cb.ConfigGroup) {
+	cg.Version = 0
+
+	for _, value := range cg.Values {
+		value.Version = 0
+	}
+
+	for _, policy := range cg.Policies {
+		policy.Version = 0
+	}
+
+	for _, group := range cg.Groups {
+		zeroVersions(group)
+	}
 }

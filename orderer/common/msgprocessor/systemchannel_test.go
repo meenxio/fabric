@@ -10,25 +10,28 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/capabilities"
 	"github.com/hyperledger/fabric/common/channelconfig"
-	"github.com/hyperledger/fabric/common/configtx"
-	configtxapi "github.com/hyperledger/fabric/common/configtx/api"
 	"github.com/hyperledger/fabric/common/crypto"
+	mockchannelconfig "github.com/hyperledger/fabric/common/mocks/config"
 	mockconfigtx "github.com/hyperledger/fabric/common/mocks/configtx"
+	"github.com/hyperledger/fabric/common/tools/configtxgen/encoder"
 	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/provisional"
 	cb "github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/utils"
 	"github.com/stretchr/testify/assert"
 )
 
 type mockSystemChannelSupport struct {
-	NewChannelConfigVal *mockconfigtx.Manager
+	NewChannelConfigVal *mockconfigtx.Validator
 	NewChannelConfigErr error
 }
 
-func (mscs *mockSystemChannelSupport) NewChannelConfig(env *cb.Envelope) (configtxapi.Manager, error) {
-	return mscs.NewChannelConfigVal, mscs.NewChannelConfigErr
+func (mscs *mockSystemChannelSupport) NewChannelConfig(env *cb.Envelope) (channelconfig.Resources, error) {
+	return &mockchannelconfig.Resources{
+		ConfigtxValidatorVal: mscs.NewChannelConfigVal,
+	}, mscs.NewChannelConfigErr
 }
 
 func TestProcessSystemChannelNormalMsg(t *testing.T) {
@@ -120,7 +123,7 @@ func TestSystemChannelConfigUpdateMsg(t *testing.T) {
 	})
 	t.Run("BadProposedUpdate", func(t *testing.T) {
 		mscs := &mockSystemChannelSupport{
-			NewChannelConfigVal: &mockconfigtx.Manager{
+			NewChannelConfigVal: &mockconfigtx.Validator{
 				ProposeConfigUpdateError: fmt.Errorf("An error"),
 			},
 		}
@@ -140,7 +143,7 @@ func TestSystemChannelConfigUpdateMsg(t *testing.T) {
 	})
 	t.Run("BadSignEnvelope", func(t *testing.T) {
 		mscs := &mockSystemChannelSupport{
-			NewChannelConfigVal: &mockconfigtx.Manager{},
+			NewChannelConfigVal: &mockconfigtx.Validator{},
 		}
 		ms := &mockSystemChannelFilterSupport{
 			ProposeConfigUpdateVal: &cb.ConfigEnvelope{},
@@ -158,7 +161,7 @@ func TestSystemChannelConfigUpdateMsg(t *testing.T) {
 	})
 	t.Run("BadByFilter", func(t *testing.T) {
 		mscs := &mockSystemChannelSupport{
-			NewChannelConfigVal: &mockconfigtx.Manager{
+			NewChannelConfigVal: &mockconfigtx.Validator{
 				ProposeConfigUpdateVal: &cb.ConfigEnvelope{},
 			},
 		}
@@ -179,7 +182,7 @@ func TestSystemChannelConfigUpdateMsg(t *testing.T) {
 	})
 	t.Run("Good", func(t *testing.T) {
 		mscs := &mockSystemChannelSupport{
-			NewChannelConfigVal: &mockconfigtx.Manager{
+			NewChannelConfigVal: &mockconfigtx.Validator{
 				ProposeConfigUpdateVal: &cb.ConfigEnvelope{},
 			},
 		}
@@ -206,7 +209,7 @@ func TestSystemChannelConfigMsg(t *testing.T) {
 	t.Run("ConfigMsg", func(t *testing.T) {
 		t.Run("BadPayloadData", func(t *testing.T) {
 			mscs := &mockSystemChannelSupport{
-				NewChannelConfigVal: &mockconfigtx.Manager{
+				NewChannelConfigVal: &mockconfigtx.Validator{
 					ProposeConfigUpdateVal: &cb.ConfigEnvelope{},
 				},
 			}
@@ -230,7 +233,7 @@ func TestSystemChannelConfigMsg(t *testing.T) {
 
 		t.Run("Good", func(t *testing.T) {
 			mscs := &mockSystemChannelSupport{
-				NewChannelConfigVal: &mockconfigtx.Manager{
+				NewChannelConfigVal: &mockconfigtx.Validator{
 					ProposeConfigUpdateVal: &cb.ConfigEnvelope{},
 				},
 			}
@@ -263,7 +266,7 @@ func TestSystemChannelConfigMsg(t *testing.T) {
 	t.Run("OrdererTxMsg", func(t *testing.T) {
 		t.Run("BadPayloadData", func(t *testing.T) {
 			mscs := &mockSystemChannelSupport{
-				NewChannelConfigVal: &mockconfigtx.Manager{
+				NewChannelConfigVal: &mockconfigtx.Validator{
 					ProposeConfigUpdateVal: &cb.ConfigEnvelope{},
 				},
 			}
@@ -287,7 +290,7 @@ func TestSystemChannelConfigMsg(t *testing.T) {
 
 		t.Run("WrongEnvelopeType", func(t *testing.T) {
 			mscs := &mockSystemChannelSupport{
-				NewChannelConfigVal: &mockconfigtx.Manager{
+				NewChannelConfigVal: &mockconfigtx.Validator{
 					ProposeConfigUpdateVal: &cb.ConfigEnvelope{},
 				},
 			}
@@ -320,7 +323,7 @@ func TestSystemChannelConfigMsg(t *testing.T) {
 
 		t.Run("GoodConfigMsg", func(t *testing.T) {
 			mscs := &mockSystemChannelSupport{
-				NewChannelConfigVal: &mockconfigtx.Manager{
+				NewChannelConfigVal: &mockconfigtx.Validator{
 					ProposeConfigUpdateVal: &cb.ConfigEnvelope{},
 				},
 			}
@@ -374,7 +377,7 @@ func TestSystemChannelConfigMsg(t *testing.T) {
 
 	t.Run("OtherMsgType", func(t *testing.T) {
 		mscs := &mockSystemChannelSupport{
-			NewChannelConfigVal: &mockconfigtx.Manager{
+			NewChannelConfigVal: &mockconfigtx.Validator{
 				ProposeConfigUpdateVal: &cb.ConfigEnvelope{},
 			},
 		}
@@ -406,14 +409,15 @@ func (mdts *mockDefaultTemplatorSupport) Signer() crypto.LocalSigner {
 
 func TestNewChannelConfig(t *testing.T) {
 	channelID := "foo"
-	singleMSPGenesisBlock := provisional.New(genesisconfig.Load(genesisconfig.SampleSingleMSPSoloProfile)).GenesisBlockForChannel(channelID)
-	configEnv := configtx.UnmarshalConfigEnvelopeOrPanic(
-		utils.UnmarshalPayloadOrPanic(
-			utils.ExtractEnvelopeOrPanic(singleMSPGenesisBlock, 0).Payload,
-		).Data,
-	)
-	ctxm, err := channelconfig.NewBundle(channelID, configEnv.Config)
-	assert.Nil(t, err)
+	gConf := genesisconfig.Load(genesisconfig.SampleSingleMSPSoloProfile)
+	gConf.Orderer.Capabilities = map[string]bool{
+		capabilities.OrdererV1_1: true,
+	}
+	channelGroup, err := encoder.NewChannelGroup(gConf)
+	assert.NoError(t, err)
+	ctxm, err := channelconfig.NewBundle(channelID, &cb.Config{ChannelGroup: channelGroup})
+
+	originalCG := proto.Clone(ctxm.ConfigtxValidator().ConfigProto().ChannelGroup).(*cb.ConfigGroup)
 
 	templator := NewDefaultTemplator(&mockDefaultTemplatorSupport{
 		Resources: ctxm,
@@ -511,7 +515,7 @@ func TestNewChannelConfig(t *testing.T) {
 						&cb.ConfigUpdate{
 							WriteSet: &cb.ConfigGroup{
 								Groups: map[string]*cb.ConfigGroup{
-									channelconfig.ApplicationGroupKey: &cb.ConfigGroup{
+									channelconfig.ApplicationGroupKey: {
 										Version: 100,
 									},
 								},
@@ -531,7 +535,7 @@ func TestNewChannelConfig(t *testing.T) {
 						&cb.ConfigUpdate{
 							WriteSet: &cb.ConfigGroup{
 								Groups: map[string]*cb.ConfigGroup{
-									channelconfig.ApplicationGroupKey: &cb.ConfigGroup{
+									channelconfig.ApplicationGroupKey: {
 										Version: 1,
 									},
 								},
@@ -552,12 +556,12 @@ func TestNewChannelConfig(t *testing.T) {
 						&cb.ConfigUpdate{
 							WriteSet: &cb.ConfigGroup{
 								Groups: map[string]*cb.ConfigGroup{
-									channelconfig.ApplicationGroupKey: &cb.ConfigGroup{
+									channelconfig.ApplicationGroupKey: {
 										Version: 1,
 									},
 								},
 								Values: map[string]*cb.ConfigValue{
-									channelconfig.ConsortiumKey: &cb.ConfigValue{
+									channelconfig.ConsortiumKey: {
 										Value: []byte("bad consortium value"),
 									},
 								},
@@ -577,12 +581,12 @@ func TestNewChannelConfig(t *testing.T) {
 						&cb.ConfigUpdate{
 							WriteSet: &cb.ConfigGroup{
 								Groups: map[string]*cb.ConfigGroup{
-									channelconfig.ApplicationGroupKey: &cb.ConfigGroup{
+									channelconfig.ApplicationGroupKey: {
 										Version: 1,
 									},
 								},
 								Values: map[string]*cb.ConfigValue{
-									channelconfig.ConsortiumKey: &cb.ConfigValue{
+									channelconfig.ConsortiumKey: {
 										Value: utils.MarshalOrPanic(
 											&cb.Consortium{
 												Name: "NotTheNameYouAreLookingFor",
@@ -606,12 +610,12 @@ func TestNewChannelConfig(t *testing.T) {
 						&cb.ConfigUpdate{
 							WriteSet: &cb.ConfigGroup{
 								Groups: map[string]*cb.ConfigGroup{
-									channelconfig.ApplicationGroupKey: &cb.ConfigGroup{
+									channelconfig.ApplicationGroupKey: {
 										Version: 1,
 									},
 								},
 								Values: map[string]*cb.ConfigValue{
-									channelconfig.ConsortiumKey: &cb.ConfigValue{
+									channelconfig.ConsortiumKey: {
 										Value: utils.MarshalOrPanic(
 											&cb.Consortium{
 												Name: genesisconfig.SampleConsortiumName,
@@ -635,15 +639,15 @@ func TestNewChannelConfig(t *testing.T) {
 						&cb.ConfigUpdate{
 							WriteSet: &cb.ConfigGroup{
 								Groups: map[string]*cb.ConfigGroup{
-									channelconfig.ApplicationGroupKey: &cb.ConfigGroup{
+									channelconfig.ApplicationGroupKey: {
 										Version: 1,
 										Groups: map[string]*cb.ConfigGroup{
-											"BadOrgName": &cb.ConfigGroup{},
+											"BadOrgName": {},
 										},
 									},
 								},
 								Values: map[string]*cb.ConfigValue{
-									channelconfig.ConsortiumKey: &cb.ConfigValue{
+									channelconfig.ConsortiumKey: {
 										Value: utils.MarshalOrPanic(
 											&cb.Consortium{
 												Name: genesisconfig.SampleConsortiumName,
@@ -669,9 +673,76 @@ func TestNewChannelConfig(t *testing.T) {
 
 	// Successful
 	t.Run("Success", func(t *testing.T) {
-		createTx, err := channelconfig.MakeChainCreationTransaction("foo", genesisconfig.SampleConsortiumName, nil, genesisconfig.SampleOrgName)
+		createTx, err := encoder.MakeChannelCreationTransaction("foo", nil, nil, genesisconfig.Load(genesisconfig.SampleSingleMSPChannelProfile))
 		assert.Nil(t, err)
-		_, err = templator.NewChannelConfig(createTx)
+		res, err := templator.NewChannelConfig(createTx)
 		assert.Nil(t, err)
+		assert.NotEmpty(t, res.ConfigtxValidator().ConfigProto().ChannelGroup.ModPolicy)
+		assert.True(t, proto.Equal(originalCG, ctxm.ConfigtxValidator().ConfigProto().ChannelGroup), "Underlying system channel config proto was mutated")
 	})
+}
+
+func TestZeroVersions(t *testing.T) {
+	data := &cb.ConfigGroup{
+		Version: 7,
+		Groups: map[string]*cb.ConfigGroup{
+			"foo": {
+				Version: 6,
+			},
+			"bar": {
+				Values: map[string]*cb.ConfigValue{
+					"foo": {
+						Version: 3,
+					},
+				},
+				Policies: map[string]*cb.ConfigPolicy{
+					"bar": {
+						Version: 5,
+					},
+				},
+			},
+		},
+		Values: map[string]*cb.ConfigValue{
+			"foo": {
+				Version: 3,
+			},
+			"bar": {
+				Version: 9,
+			},
+		},
+		Policies: map[string]*cb.ConfigPolicy{
+			"foo": {
+				Version: 4,
+			},
+			"bar": {
+				Version: 5,
+			},
+		},
+	}
+
+	expected := &cb.ConfigGroup{
+		Groups: map[string]*cb.ConfigGroup{
+			"foo": {},
+			"bar": {
+				Values: map[string]*cb.ConfigValue{
+					"foo": {},
+				},
+				Policies: map[string]*cb.ConfigPolicy{
+					"bar": {},
+				},
+			},
+		},
+		Values: map[string]*cb.ConfigValue{
+			"foo": {},
+			"bar": {},
+		},
+		Policies: map[string]*cb.ConfigPolicy{
+			"foo": {},
+			"bar": {},
+		},
+	}
+
+	zeroVersions(data)
+
+	assert.True(t, proto.Equal(expected, data))
 }
