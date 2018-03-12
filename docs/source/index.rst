@@ -30,88 +30,19 @@ Business:
    <br/><br/>
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Getting Started
-
-   prereqs
+   :maxdepth: 1
+   :caption: Table of Contents
+   
+   index
    getting_started
-   samples
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Key Concepts
-
-   blockchain
-   capabilities
-   fabric_model
-   usecases
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Tutorials
-
-   build_network
-   write_first_app
-   chaincode
-   chaincode4ade
-   chaincode4noah
-   videos
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Operations Guide
-
-   best_practices
-   msp
-   configtx
-   configtxgen
-   configtxlator
-   cc-packaging-and-signing
-   endorsement-policies
-   error-handling
-   logging-control
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Architecture
-
-   arch-deep-dive
-   txflow
-   Hyperledger Fabric CA's User Guide <http://hyperledger-fabric-ca.readthedocs.io/en/latest>
-   fabric-sdks
-   kafka
-   channels
-   ledger
-   readwrite
-   gossip
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Troubleshooting and FAQs
-
+   key_concepts
+   tutorials
+   ops_guide
+   command_ref
+   architecture
    Fabric-FAQ
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Contributing
-
+   ordering-service-faq
    CONTRIBUTING
-   MAINTAINERS
-   jira_navigation
-   dev-setup/devenv
-   dev-setup/build
-   Gerrit/lf-account
-   Gerrit/gerrit
-   Gerrit/changes
-   Gerrit/reviewing
-   Gerrit/best-practices
-   testing
-   Style-guides/go-style
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Appendix
-
    glossary
    releases
    questions
