@@ -8,10 +8,12 @@ package transientstore
 
 import (
 	"bytes"
-	"path/filepath"
+	"errors"
 
 	"github.com/hyperledger/fabric/common/ledger/util"
-	"github.com/hyperledger/fabric/core/config"
+	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/protos/common"
+	"github.com/hyperledger/fabric/protos/ledger/rwset"
 )
 
 var (
@@ -88,7 +90,7 @@ func splitCompositeKeyOfPurgeIndexByTxid(compositeKey []byte) (uuid string, bloc
 // into txid, uuid and blockHeight.
 func splitCompositeKeyOfPurgeIndexByHeight(compositeKey []byte) (txid string, uuid string, blockHeight uint64) {
 	var n int
-	blockHeight, n = util.DecodeOrderPreservingVarUint64(compositeKey[2:])
+	blockHeight, n, _ = util.DecodeOrderPreservingVarUint64(compositeKey[2:])
 	splits := bytes.Split(compositeKey[n+3:], []byte{compositeKeySep})
 	txid = string(splits[0])
 	uuid = string(splits[1])
@@ -102,7 +104,7 @@ func splitCompositeKeyWithoutPrefixForTxid(compositeKey []byte) (uuid string, bl
 	firstSepIndex := bytes.IndexByte(compositeKey, compositeKeySep)
 	secondSepIndex := firstSepIndex + bytes.IndexByte(compositeKey[firstSepIndex+1:], compositeKeySep) + 1
 	uuid = string(compositeKey[firstSepIndex+1 : secondSepIndex])
-	blockHeight, _ = util.DecodeOrderPreservingVarUint64(compositeKey[secondSepIndex+1:])
+	blockHeight, _, _ = util.DecodeOrderPreservingVarUint64(compositeKey[secondSepIndex+1:])
 	return
 }
 
@@ -174,8 +176,59 @@ func createPurgeIndexByTxidRangeEndKey(txid string) []byte {
 	return endKey
 }
 
-// GetTransientStorePath returns the filesystem path for temporarily storing the private rwset
-func GetTransientStorePath() string {
-	sysPath := config.GetPath("peer.fileSystemPath")
-	return filepath.Join(sysPath, "transientStore")
+// trimPvtWSet returns a `TxPvtReadWriteSet` that retains only list of 'ns/collections' supplied in the filter
+// A nil filter does not filter any results and returns the original `pvtWSet` as is
+func trimPvtWSet(pvtWSet *rwset.TxPvtReadWriteSet, filter ledger.PvtNsCollFilter) *rwset.TxPvtReadWriteSet {
+	if filter == nil {
+		return pvtWSet
+	}
+
+	var filteredNsRwSet []*rwset.NsPvtReadWriteSet
+	for _, ns := range pvtWSet.NsPvtRwset {
+		var filteredCollRwSet []*rwset.CollectionPvtReadWriteSet
+		for _, coll := range ns.CollectionPvtRwset {
+			if filter.Has(ns.Namespace, coll.CollectionName) {
+				filteredCollRwSet = append(filteredCollRwSet, coll)
+			}
+		}
+		if filteredCollRwSet != nil {
+			filteredNsRwSet = append(filteredNsRwSet,
+				&rwset.NsPvtReadWriteSet{
+					Namespace:          ns.Namespace,
+					CollectionPvtRwset: filteredCollRwSet,
+				},
+			)
+		}
+	}
+	var filteredTxPvtRwSet *rwset.TxPvtReadWriteSet
+	if filteredNsRwSet != nil {
+		filteredTxPvtRwSet = &rwset.TxPvtReadWriteSet{
+			DataModel:  pvtWSet.GetDataModel(),
+			NsPvtRwset: filteredNsRwSet,
+		}
+	}
+	return filteredTxPvtRwSet
+}
+
+func trimPvtCollectionConfigs(configs map[string]*common.CollectionConfigPackage,
+	filter ledger.PvtNsCollFilter) (map[string]*common.CollectionConfigPackage, error) {
+	if filter == nil {
+		return configs, nil
+	}
+	result := make(map[string]*common.CollectionConfigPackage)
+
+	for ns, pkg := range configs {
+		result[ns] = &common.CollectionConfigPackage{}
+		for _, colConf := range pkg.GetConfig() {
+			switch cconf := colConf.Payload.(type) {
+			case *common.CollectionConfig_StaticCollectionConfig:
+				if filter.Has(ns, cconf.StaticCollectionConfig.Name) {
+					result[ns].Config = append(result[ns].Config, colConf)
+				}
+			default:
+				return nil, errors.New("unexpected collection type")
+			}
+		}
+	}
+	return result, nil
 }

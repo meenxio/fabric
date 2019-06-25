@@ -8,8 +8,6 @@ package peer
 
 import (
 	"fmt"
-	"net"
-	"runtime"
 	"sync"
 
 	"github.com/hyperledger/fabric/common/channelconfig"
@@ -19,102 +17,47 @@ import (
 	"github.com/hyperledger/fabric/common/flogging"
 	commonledger "github.com/hyperledger/fabric/common/ledger"
 	"github.com/hyperledger/fabric/common/ledger/blockledger"
-	fileledger "github.com/hyperledger/fabric/common/ledger/blockledger/file"
+	"github.com/hyperledger/fabric/common/ledger/blockledger/fileledger"
 	"github.com/hyperledger/fabric/common/policies"
-	"github.com/hyperledger/fabric/common/resourcesconfig"
+	"github.com/hyperledger/fabric/common/semaphore"
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/committer"
 	"github.com/hyperledger/fabric/core/committer/txvalidator"
+	"github.com/hyperledger/fabric/core/committer/txvalidator/plugin"
+	"github.com/hyperledger/fabric/core/committer/txvalidator/v20/plugindispatcher"
+	vir "github.com/hyperledger/fabric/core/committer/txvalidator/v20/valinforetriever"
 	"github.com/hyperledger/fabric/core/common/privdata"
+	"github.com/hyperledger/fabric/core/common/sysccprovider"
+	validation "github.com/hyperledger/fabric/core/handlers/validation/api/state"
 	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/core/ledger/customtx"
 	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
 	"github.com/hyperledger/fabric/core/transientstore"
 	"github.com/hyperledger/fabric/gossip/api"
-	"github.com/hyperledger/fabric/gossip/service"
+	gossipprivdata "github.com/hyperledger/fabric/gossip/privdata"
+	gossipservice "github.com/hyperledger/fabric/gossip/service"
 	"github.com/hyperledger/fabric/msp"
 	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
 	"github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
-	"github.com/spf13/viper"
-	"golang.org/x/sync/semaphore"
 )
 
 var peerLogger = flogging.MustGetLogger("peer")
 
-var peerServer comm.GRPCServer
-
-var configTxProcessor = newConfigTxProcessor()
-var ConfigTxProcessors = customtx.Processors{
-	common.HeaderType_CONFIG:               configTxProcessor,
-	common.HeaderType_PEER_RESOURCE_UPDATE: configTxProcessor,
+type CollectionInfoShim struct {
+	plugindispatcher.CollectionAndLifecycleResources
+	ChannelID string
 }
 
-// singleton instance to manage credentials for the peer across channel config changes
-var credSupport = comm.GetCredentialSupport()
+func (cis *CollectionInfoShim) CollectionValidationInfo(chaincodeName, collectionName string, validationState validation.State) ([]byte, error, error) {
+	return cis.CollectionAndLifecycleResources.CollectionValidationInfo(cis.ChannelID, chaincodeName, collectionName, validationState)
+}
 
 type gossipSupport struct {
 	channelconfig.Application
 	configtx.Validator
 	channelconfig.Channel
-}
-
-type chainSupport struct {
-	bundleSource *resourcesconfig.BundleSource
-	channelconfig.Resources
-	channelconfig.Application
-	ledger     ledger.PeerLedger
-	fileLedger *fileledger.FileLedger
-}
-
-var transientStoreFactory = &storeProvider{}
-
-type storeProvider struct {
-	transientstore.StoreProvider
-	sync.Mutex
-}
-
-func (sp *storeProvider) OpenStore(ledgerID string) (transientstore.Store, error) {
-	sp.Lock()
-	defer sp.Unlock()
-	if sp.StoreProvider == nil {
-		sp.StoreProvider = transientstore.NewStoreProvider()
-	}
-	return sp.StoreProvider.OpenStore(ledgerID)
-}
-
-func (cs *chainSupport) Apply(configtx *common.ConfigEnvelope) error {
-	err := cs.ConfigtxValidator().Validate(configtx)
-	if err != nil {
-		return err
-	}
-
-	// If the chainSupport is being mocked, this field will be nil
-	if cs.bundleSource != nil {
-		bundle, err := channelconfig.NewBundle(cs.ConfigtxValidator().ChainID(), configtx.Config)
-		if err != nil {
-			return err
-		}
-
-		channelconfig.LogSanityChecks(bundle)
-
-		err = cs.bundleSource.ChannelConfig().ValidateNew(bundle)
-		if err != nil {
-			return err
-		}
-
-		capabilitiesSupportedOrPanic(bundle)
-
-		rBundle, err := cs.bundleSource.NewFromChannelConfig(bundle)
-		if err != nil {
-			return err
-		}
-
-		cs.bundleSource.Update(rBundle)
-	}
-	return nil
 }
 
 func capabilitiesSupportedOrPanic(res channelconfig.Resources) {
@@ -124,108 +67,125 @@ func capabilitiesSupportedOrPanic(res channelconfig.Resources) {
 	}
 
 	if err := ac.Capabilities().Supported(); err != nil {
-		peerLogger.Panicf("[channel %s] incompatible %s", res.ConfigtxValidator(), err)
+		peerLogger.Panicf("[channel %s] incompatible: %s", res.ConfigtxValidator().ChainID(), err)
 	}
 
 	if err := res.ChannelConfig().Capabilities().Supported(); err != nil {
-		peerLogger.Panicf("[channel %s] incompatible %s", res.ConfigtxValidator(), err)
+		peerLogger.Panicf("[channel %s] incompatible: %s", res.ConfigtxValidator().ChainID(), err)
 	}
 }
 
-func (cs *chainSupport) Ledger() ledger.PeerLedger {
-	return cs.ledger
+// Channel is a local struct to manage objects in a Channel
+type Channel struct {
+	cb           *common.Block
+	ledger       ledger.PeerLedger
+	bundleSource *channelconfig.BundleSource
+	resources    channelconfig.Resources
+	store        transientstore.Store
 }
 
-func (cs *chainSupport) GetMSPIDs(cid string) []string {
-	return GetMSPIDs(cid)
+// bundleUpdate is called by the bundleSource when the channel configuration
+// changes.
+func (c *Channel) bundleUpdate(b *channelconfig.Bundle) {
+	c.resources = b
 }
 
-// Sequence passes through to the underlying configtx.Validator
-func (cs *chainSupport) Sequence() uint64 {
-	sb := cs.bundleSource.StableBundle()
-	return sb.ConfigtxValidator().Sequence() + sb.ChannelConfig().ConfigtxValidator().Sequence()
+func (c *Channel) Ledger() ledger.PeerLedger {
+	return c.ledger
 }
-func (cs *chainSupport) Reader() blockledger.Reader {
-	return cs.fileLedger
+
+func (c *Channel) Resources() channelconfig.Resources {
+	return c.resources
 }
-func (cs *chainSupport) Errored() <-chan struct{} {
+
+func (c *Channel) ConfigBlock() *common.Block {
+	return c.cb
+}
+
+func (c *Channel) setConfigBlock(cb *common.Block) error {
+	c.cb = cb
 	return nil
 }
 
-// chain is a local struct to manage objects in a chain
-type chain struct {
-	cs        *chainSupport
-	cb        *common.Block
-	committer committer.Committer
+func (c *Channel) BundleSource() *channelconfig.BundleSource {
+	return c.bundleSource
 }
 
-// chains is a local map of chainID->chainObject
-var chains = struct {
-	sync.RWMutex
-	list map[string]*chain
-}{list: make(map[string]*chain)}
-
-var chainInitializer func(string)
-
-var mockMSPIDGetter func(string) []string
-
-func MockSetMSPIDGetter(mspIDGetter func(string) []string) {
-	mockMSPIDGetter = mspIDGetter
+func (c *Channel) Store() transientstore.Store {
+	return c.store
 }
 
-// validationWorkersSemaphore is the semaphore used to ensure that
-// there are not too many concurrent tx validation goroutines
-var validationWorkersSemaphore *semaphore.Weighted
+func (c *Channel) Reader() blockledger.Reader {
+	return fileledger.NewFileLedger(fileLedgerBlockStore{c.ledger})
+}
 
-// Initialize sets up any chains that the peer has from the persistence. This
-// function should be called at the start up when the ledger and gossip
-// ready
-func Initialize(init func(string)) {
-	nWorkers := viper.GetInt("peer.validatorPoolSize")
-	if nWorkers <= 0 {
-		nWorkers = runtime.NumCPU()
-	}
-	validationWorkersSemaphore = semaphore.NewWeighted(int64(nWorkers))
+// Errored returns a channel that can be used to determine
+// if a backing resource has errored. At this point in time,
+// the peer does not have any error conditions that lead to
+// this function signaling that an error has occurred.
+func (c *Channel) Errored() <-chan struct{} {
+	// If this is ever updated to return a real channel, the error message
+	// in deliver.go around this channel closing should be updated.
+	return nil
+}
 
-	chainInitializer = init
+func (c *Channel) PolicyManager() policies.Manager {
+	return c.resources.PolicyManager()
+}
 
-	var cb *common.Block
-	var ledger ledger.PeerLedger
-	ledgermgmt.Initialize(ConfigTxProcessors)
-	ledgerIds, err := ledgermgmt.GetLedgerIDs()
+// Sequence passes through to the underlying configtx.Validator
+func (c *Channel) Sequence() uint64 {
+	return c.resources.ConfigtxValidator().Sequence()
+}
+
+func (c *Channel) Apply(configtx *common.ConfigEnvelope) error {
+	configTxValidator := c.resources.ConfigtxValidator()
+	err := configTxValidator.Validate(configtx)
 	if err != nil {
-		panic(fmt.Errorf("Error in initializing ledgermgmt: %s", err))
+		return err
 	}
-	for _, cid := range ledgerIds {
-		peerLogger.Infof("Loading chain %s", cid)
-		if ledger, err = ledgermgmt.OpenLedger(cid); err != nil {
-			peerLogger.Warningf("Failed to load ledger %s(%s)", cid, err)
-			peerLogger.Debugf("Error while loading ledger %s with message %s. We continue to the next ledger rather than abort.", cid, err)
-			continue
-		}
-		if cb, err = getCurrConfigBlockFromLedger(ledger); err != nil {
-			peerLogger.Warningf("Failed to find config block on ledger %s(%s)", cid, err)
-			peerLogger.Debugf("Error while looking for config block on ledger %s with message %s. We continue to the next ledger rather than abort.", cid, err)
-			continue
-		}
-		// Create a chain if we get a valid ledger with config block
-		if err = createChain(cid, ledger, cb); err != nil {
-			peerLogger.Warningf("Failed to load chain %s(%s)", cid, err)
-			peerLogger.Debugf("Error reloading chain %s with message %s. We continue to the next chain rather than abort.", cid, err)
-			continue
-		}
 
-		InitChain(cid)
+	bundle, err := channelconfig.NewBundle(configTxValidator.ChainID(), configtx.Config)
+	if err != nil {
+		return err
 	}
+
+	channelconfig.LogSanityChecks(bundle)
+	err = c.bundleSource.ValidateNew(bundle)
+	if err != nil {
+		return err
+	}
+
+	capabilitiesSupportedOrPanic(bundle)
+
+	c.bundleSource.Update(bundle)
+	return nil
 }
 
-// InitChain takes care to initialize chain after peer joined, for example deploys system CCs
-func InitChain(cid string) {
-	if chainInitializer != nil {
-		// Initialize chaincode, namely deploy system CC
-		peerLogger.Debugf("Init chain %s", cid)
-		chainInitializer(cid)
+func (c *Channel) Capabilities() channelconfig.ApplicationCapabilities {
+	ac, ok := c.resources.ApplicationConfig()
+	if !ok {
+		return nil
 	}
+	return ac.Capabilities()
+}
+
+func (c *Channel) GetMSPIDs() []string {
+	ac, ok := c.resources.ApplicationConfig()
+	if !ok || ac.Organizations() == nil {
+		return nil
+	}
+
+	var mspIDs []string
+	for _, org := range ac.Organizations() {
+		mspIDs = append(mspIDs, org.MSPID())
+	}
+
+	return mspIDs
+}
+
+func (c *Channel) MSPManager() msp.MSPManager {
+	return c.resources.MSPManager()
 }
 
 func getCurrConfigBlockFromLedger(ledger ledger.PeerLedger) (*common.Block, error) {
@@ -242,7 +202,7 @@ func getCurrConfigBlockFromLedger(ledger ledger.PeerLedger) (*common.Block, erro
 	}
 
 	// get most recent config block location from last block metadata
-	configBlockIndex, err := utils.GetLastConfigIndexFromBlock(lastBlock)
+	configBlockIndex, err := protoutil.GetLastConfigIndexFromBlock(lastBlock)
 	if err != nil {
 		return nil, err
 	}
@@ -257,466 +217,46 @@ func getCurrConfigBlockFromLedger(ledger ledger.PeerLedger) (*common.Block, erro
 	return configBlock, nil
 }
 
-// createChain creates a new chain object and insert it into the chains
-func createChain(cid string, ledger ledger.PeerLedger, cb *common.Block) error {
-	chanConf, err := retrievePersistedChannelConfig(ledger)
-	if err != nil {
-		return err
-	}
-
-	var bundle *channelconfig.Bundle
-
-	if chanConf != nil {
-		bundle, err = channelconfig.NewBundle(cid, chanConf)
-		if err != nil {
-			return err
-		}
-	} else {
-		// Config was only stored in the statedb starting with v1.1 binaries
-		// so if the config is not found there, extract it manually from the config block
-		envelopeConfig, err := utils.ExtractEnvelope(cb, 0)
-		if err != nil {
-			return err
-		}
-
-		bundle, err = channelconfig.NewBundleFromEnvelope(envelopeConfig)
-		if err != nil {
-			return err
-		}
-	}
-
-	capabilitiesSupportedOrPanic(bundle)
-
-	channelconfig.LogSanityChecks(bundle)
-
-	gossipEventer := service.GetGossipService().NewConfigEventer()
-
-	gossipCallbackWrapper := func(bundle *resourcesconfig.Bundle) {
-		ac, ok := bundle.ChannelConfig().ApplicationConfig()
-		if !ok {
-			// TODO, handle a missing ApplicationConfig more gracefully
-			ac = nil
-		}
-		gossipEventer.ProcessConfigUpdate(&gossipSupport{
-			Validator:   bundle.ChannelConfig().ConfigtxValidator(),
-			Application: ac,
-			Channel:     bundle.ChannelConfig().ChannelConfig(),
-		})
-		service.GetGossipService().SuspectPeers(func(identity api.PeerIdentityType) bool {
-			// TODO: this is a place-holder that would somehow make the MSP layer suspect
-			// that a given certificate is revoked, or its intermediate CA is revoked.
-			// In the meantime, before we have such an ability, we return true in order
-			// to suspect ALL identities in order to validate all of them.
-			return true
-		})
-	}
-
-	trustedRootsCallbackWrapper := func(bundle *resourcesconfig.Bundle) {
-		updateTrustedRoots(bundle.ChannelConfig())
-	}
-
-	mspCallback := func(bundle *resourcesconfig.Bundle) {
-		// TODO remove once all references to mspmgmt are gone from peer code
-		mspmgmt.XXXSetMSPManager(cid, bundle.ChannelConfig().MSPManager())
-	}
-
-	ac, ok := bundle.ApplicationConfig()
-	if !ok {
-		ac = nil
-	}
-	cs := &chainSupport{
-		Application: ac, // TODO, refactor as this is accessible through Manager
-		ledger:      ledger,
-		fileLedger:  fileledger.NewFileLedger(fileLedgerBlockStore{ledger}),
-	}
-
-	peerSingletonCallback := func(bundle *resourcesconfig.Bundle) {
-		ac, ok := bundle.ChannelConfig().ApplicationConfig()
-		if !ok {
-			ac = nil
-		}
-		cs.Application = ac
-		cs.Resources = bundle.ChannelConfig()
-	}
-
-	resConf := &common.Config{ChannelGroup: &common.ConfigGroup{}}
-	if ac != nil && ac.Capabilities().ResourcesTree() {
-		iResConf, err := retrievePersistedResourceConfig(ledger)
-
-		if err != nil {
-			return err
-		}
-
-		if iResConf != nil {
-			resConf = iResConf
-		}
-	}
-
-	rBundle, err := resourcesconfig.NewBundle(cid, resConf, bundle)
-	if err != nil {
-		return err
-	}
-
-	cs.bundleSource = resourcesconfig.NewBundleSource(
-		rBundle,
-		gossipCallbackWrapper,
-		trustedRootsCallbackWrapper,
-		mspCallback,
-		peerSingletonCallback,
-	)
-
-	vcs := struct {
-		*chainSupport
-		*semaphore.Weighted
-	}{cs, validationWorkersSemaphore}
-	validator := txvalidator.NewTxValidator(vcs)
-	c := committer.NewLedgerCommitterReactive(ledger, func(block *common.Block) error {
-		chainID, err := utils.GetChainIDFromBlock(block)
-		if err != nil {
-			return err
-		}
-		return SetCurrConfigBlock(block, chainID)
-	})
-
-	ordererAddresses := bundle.ChannelConfig().OrdererAddresses()
-	if len(ordererAddresses) == 0 {
-		return errors.New("No ordering service endpoint provided in configuration block")
-	}
-
-	// TODO: does someone need to call Close() on the transientStoreFactory at shutdown of the peer?
-	store, err := transientStoreFactory.OpenStore(bundle.ConfigtxValidator().ChainID())
-	if err != nil {
-		return errors.Wrapf(err, "Failed opening transient store for %s", bundle.ConfigtxValidator().ChainID())
-	}
-	simpleCollectionStore := privdata.NewSimpleCollectionStore(&collectionSupport{
-		PeerLedger: ledger,
-	})
-	service.GetGossipService().InitializeChannel(bundle.ConfigtxValidator().ChainID(), ordererAddresses, service.Support{
-		Validator: validator,
-		Committer: c,
-		Store:     store,
-		Cs:        simpleCollectionStore,
-	})
-
-	chains.Lock()
-	defer chains.Unlock()
-	chains.list[cid] = &chain{
-		cs:        cs,
-		cb:        cb,
-		committer: c,
-	}
-
-	return nil
-}
-
-// CreateChainFromBlock creates a new chain from config block
-func CreateChainFromBlock(cb *common.Block) error {
-	cid, err := utils.GetChainIDFromBlock(cb)
-	if err != nil {
-		return err
-	}
-
-	var l ledger.PeerLedger
-	if l, err = ledgermgmt.CreateLedger(cb); err != nil {
-		return fmt.Errorf("Cannot create ledger from genesis block, due to %s", err)
-	}
-
-	return createChain(cid, l, cb)
-}
-
-// GetLedger returns the ledger of the chain with chain ID. Note that this
-// call returns nil if chain cid has not been created.
-func GetLedger(cid string) ledger.PeerLedger {
-	chains.RLock()
-	defer chains.RUnlock()
-	if c, ok := chains.list[cid]; ok {
-		return c.cs.ledger
-	}
-	return nil
-}
-
-// GetResourcesConfig returns the resources configuration of the chain with channel ID. Note that this
-// call returns nil if chain cid has not been created.
-func GetResourcesConfig(cid string) resourcesconfig.Resources {
-	chains.RLock()
-	defer chains.RUnlock()
-	if c, ok := chains.list[cid]; ok {
-		return c.cs.bundleSource.StableBundle()
-	}
-	return nil
-}
-
-// GetChannelConfig returns the channel configuration of the chain with channel ID. Note that this
-// call returns nil if chain cid has not been created.
-func GetChannelConfig(cid string) channelconfig.Resources {
-	chains.RLock()
-	defer chains.RUnlock()
-	if c, ok := chains.list[cid]; ok {
-		return c.cs
-	}
-	return nil
-}
-
-// GetPolicyManager returns the policy manager of the chain with chain ID. Note that this
-// call returns nil if chain cid has not been created.
-func GetPolicyManager(cid string) policies.Manager {
-	chains.RLock()
-	defer chains.RUnlock()
-	if c, ok := chains.list[cid]; ok {
-		return c.cs.PolicyManager()
-	}
-	return nil
-}
-
-// GetCurrConfigBlock returns the cached config block of the specified chain.
-// Note that this call returns nil if chain cid has not been created.
-func GetCurrConfigBlock(cid string) *common.Block {
-	chains.RLock()
-	defer chains.RUnlock()
-	if c, ok := chains.list[cid]; ok {
-		return c.cb
-	}
-	return nil
-}
-
 // updates the trusted roots for the peer based on updates to channels
-func updateTrustedRoots(cm channelconfig.Resources) {
+func (p *Peer) updateTrustedRoots(cm channelconfig.Resources) {
+	if p.ServerConfig.SecOpts == nil || !p.ServerConfig.SecOpts.UseTLS {
+		return
+	}
+
 	// this is triggered on per channel basis so first update the roots for the channel
 	peerLogger.Debugf("Updating trusted root authorities for channel %s", cm.ConfigtxValidator().ChainID())
-	var serverConfig comm.ServerConfig
-	var err error
-	// only run is TLS is enabled
-	serverConfig, err = GetServerConfig()
-	if err == nil && serverConfig.SecOpts.UseTLS {
-		buildTrustedRootsForChain(cm)
 
-		// now iterate over all roots for all app and orderer chains
-		trustedRoots := [][]byte{}
-		credSupport.RLock()
-		defer credSupport.RUnlock()
-		for _, roots := range credSupport.AppRootCAsByChain {
-			trustedRoots = append(trustedRoots, roots...)
-		}
-		// also need to append statically configured root certs
-		if len(serverConfig.SecOpts.ClientRootCAs) > 0 {
-			trustedRoots = append(trustedRoots, serverConfig.SecOpts.ClientRootCAs...)
-		}
-		if len(serverConfig.SecOpts.ServerRootCAs) > 0 {
-			trustedRoots = append(trustedRoots, serverConfig.SecOpts.ServerRootCAs...)
-		}
+	p.CredentialSupport.BuildTrustedRootsForChain(cm)
 
-		server := peerServer
-		// now update the client roots for the peerServer
-		if server != nil {
-			err := server.SetClientRootCAs(trustedRoots)
-			if err != nil {
-				msg := "Failed to update trusted roots for peer from latest config " +
-					"block.  This peer may not be able to communicate " +
-					"with members of channel %s (%s)"
-				peerLogger.Warningf(msg, cm.ConfigtxValidator().ChainID(), err)
-			}
-		}
+	// now iterate over all roots for all app and orderer channels
+	var trustedRoots [][]byte
+	for _, roots := range p.CredentialSupport.AppRootCAsByChain() {
+		trustedRoots = append(trustedRoots, roots...)
 	}
-}
+	trustedRoots = append(trustedRoots, p.ServerConfig.SecOpts.ClientRootCAs...)
+	trustedRoots = append(trustedRoots, p.ServerConfig.SecOpts.ServerRootCAs...)
 
-// populates the appRootCAs and orderRootCAs maps by getting the
-// root and intermediate certs for all msps associated with the MSPManager
-func buildTrustedRootsForChain(cm channelconfig.Resources) {
-	credSupport.Lock()
-	defer credSupport.Unlock()
-
-	appRootCAs := [][]byte{}
-	ordererRootCAs := [][]byte{}
-	appOrgMSPs := make(map[string]struct{})
-	ordOrgMSPs := make(map[string]struct{})
-
-	if ac, ok := cm.ApplicationConfig(); ok {
-		//loop through app orgs and build map of MSPIDs
-		for _, appOrg := range ac.Organizations() {
-			appOrgMSPs[appOrg.MSPID()] = struct{}{}
-		}
-	}
-
-	if ac, ok := cm.OrdererConfig(); ok {
-		//loop through orderer orgs and build map of MSPIDs
-		for _, ordOrg := range ac.Organizations() {
-			ordOrgMSPs[ordOrg.MSPID()] = struct{}{}
-		}
-	}
-
-	cid := cm.ConfigtxValidator().ChainID()
-	peerLogger.Debugf("updating root CAs for channel [%s]", cid)
-	msps, err := cm.MSPManager().GetMSPs()
+	// now update the client roots for the peerServer
+	err := p.Server.SetClientRootCAs(trustedRoots)
 	if err != nil {
-		peerLogger.Errorf("Error getting root CAs for channel %s (%s)", cid, err)
+		msg := "Failed to update trusted roots from latest config block. " +
+			"This peer may not be able to communicate with members of channel %s (%s)"
+		peerLogger.Warningf(msg, cm.ConfigtxValidator().ChainID(), err)
 	}
-	if err == nil {
-		for k, v := range msps {
-			// check to see if this is a FABRIC MSP
-			if v.GetType() == msp.FABRIC {
-				for _, root := range v.GetTLSRootCerts() {
-					// check to see of this is an app org MSP
-					if _, ok := appOrgMSPs[k]; ok {
-						peerLogger.Debugf("adding app root CAs for MSP [%s]", k)
-						appRootCAs = append(appRootCAs, root)
-					}
-					// check to see of this is an orderer org MSP
-					if _, ok := ordOrgMSPs[k]; ok {
-						peerLogger.Debugf("adding orderer root CAs for MSP [%s]", k)
-						ordererRootCAs = append(ordererRootCAs, root)
-					}
-				}
-				for _, intermediate := range v.GetTLSIntermediateCerts() {
-					// check to see of this is an app org MSP
-					if _, ok := appOrgMSPs[k]; ok {
-						peerLogger.Debugf("adding app root CAs for MSP [%s]", k)
-						appRootCAs = append(appRootCAs, intermediate)
-					}
-					// check to see of this is an orderer org MSP
-					if _, ok := ordOrgMSPs[k]; ok {
-						peerLogger.Debugf("adding orderer root CAs for MSP [%s]", k)
-						ordererRootCAs = append(ordererRootCAs, intermediate)
-					}
-				}
-			}
-		}
-		credSupport.AppRootCAsByChain[cid] = appRootCAs
-		credSupport.OrdererRootCAsByChain[cid] = ordererRootCAs
-	}
-}
-
-// GetMSPIDs returns the ID of each application MSP defined on this chain
-func GetMSPIDs(cid string) []string {
-	chains.RLock()
-	defer chains.RUnlock()
-
-	//if mock is set, use it to return MSPIDs
-	//used for tests without a proper join
-	if mockMSPIDGetter != nil {
-		return mockMSPIDGetter(cid)
-	}
-	if c, ok := chains.list[cid]; ok {
-		if c == nil || c.cs == nil {
-			return nil
-		}
-		ac, ok := c.cs.ApplicationConfig()
-		if !ok || ac.Organizations() == nil {
-			return nil
-		}
-
-		orgs := ac.Organizations()
-		toret := make([]string, len(orgs))
-		i := 0
-		for _, org := range orgs {
-			toret[i] = org.MSPID()
-			i++
-		}
-
-		return toret
-	}
-	return nil
-}
-
-// SetCurrConfigBlock sets the current config block of the specified chain
-func SetCurrConfigBlock(block *common.Block, cid string) error {
-	chains.Lock()
-	defer chains.Unlock()
-	if c, ok := chains.list[cid]; ok {
-		c.cb = block
-		return nil
-	}
-	return fmt.Errorf("Chain %s doesn't exist on the peer", cid)
-}
-
-// GetLocalIP returns the non loopback local IP of the host
-func GetLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return ""
-	}
-	for _, address := range addrs {
-		// check the address type and if it is not a loopback then display it
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String()
-			}
-		}
-	}
-	return ""
-}
-
-// GetChannelsInfo returns an array with information about all channels for
-// this peer
-func GetChannelsInfo() []*pb.ChannelInfo {
-	// array to store metadata for all channels
-	var channelInfoArray []*pb.ChannelInfo
-
-	chains.RLock()
-	defer chains.RUnlock()
-	for key := range chains.list {
-		channelInfo := &pb.ChannelInfo{ChannelId: key}
-
-		// add this specific chaincode's metadata to the array of all chaincodes
-		channelInfoArray = append(channelInfoArray, channelInfo)
-	}
-
-	return channelInfoArray
-}
-
-// NewChannelPolicyManagerGetter returns a new instance of ChannelPolicyManagerGetter
-func NewChannelPolicyManagerGetter() policies.ChannelPolicyManagerGetter {
-	return &channelPolicyManagerGetter{}
-}
-
-type channelPolicyManagerGetter struct{}
-
-func (c *channelPolicyManagerGetter) Manager(channelID string) (policies.Manager, bool) {
-	policyManager := GetPolicyManager(channelID)
-	return policyManager, policyManager != nil
-}
-
-// NewPeerServer creates an instance of comm.GRPCServer
-// This server is used for peer communications
-func NewPeerServer(listenAddress string, serverConfig comm.ServerConfig) (comm.GRPCServer, error) {
-	var err error
-	peerServer, err = comm.NewGRPCServer(listenAddress, serverConfig)
-	if err != nil {
-		peerLogger.Errorf("Failed to create peer server (%s)", err)
-		return nil, err
-	}
-	return peerServer, nil
-}
-
-type collectionSupport struct {
-	ledger.PeerLedger
-}
-
-func (cs *collectionSupport) GetQueryExecutorForLedger(cid string) (ledger.QueryExecutor, error) {
-	return cs.NewQueryExecutor()
-}
-
-func (*collectionSupport) GetCollectionKVSKey(cc common.CollectionCriteria) string {
-	return privdata.BuildCollectionKVSKey(cc.Namespace)
-}
-
-func (*collectionSupport) GetIdentityDeserializer(chainID string) msp.IdentityDeserializer {
-	return mspmgmt.GetManagerForChain(chainID)
 }
 
 //
 //  Deliver service support structs for the peer
 //
 
-// DeliverSupportManager provides access to a channel for performing deliver
-type DeliverSupportManager struct {
-}
+// DeliverChainManager provides access to a channel for performing deliver
+type DeliverChainManager struct{}
 
-func (dsm DeliverSupportManager) GetChain(chainID string) (deliver.Support, bool) {
-	channel, ok := chains.list[chainID]
-	if !ok {
-		return nil, ok
+func (DeliverChainManager) GetChain(chainID string) deliver.Chain {
+	if channel := Default.Channel(chainID); channel != nil {
+		return channel
 	}
-	return channel.cs, ok
+	return nil
 }
 
 // fileLedgerBlockStore implements the interface expected by
@@ -733,40 +273,384 @@ func (flbs fileLedgerBlockStore) RetrieveBlocks(startBlockNumber uint64) (common
 	return flbs.GetBlocksIterator(startBlockNumber)
 }
 
-// NewResourceConfigSupport returns
+// NewConfigSupport returns
 func NewConfigSupport() cc.Manager {
 	return &configSupport{}
 }
 
-type configSupport struct {
-}
+type configSupport struct{}
 
 // GetChannelConfig returns an instance of a object that represents
 // current channel configuration tree of the specified channel. The
 // ConfigProto method of the returned object can be used to get the
 // proto representing the channel configuration.
-func (*configSupport) GetChannelConfig(channel string) cc.Config {
-	chains.RLock()
-	defer chains.RUnlock()
-	chain := chains.list[channel]
-	if chain == nil {
-		peerLogger.Error("GetChannelConfig: channel", channel, "not found in the list of channels associated with this peer")
+func (*configSupport) GetChannelConfig(cid string) cc.Config {
+	channel := Default.Channel(cid)
+	if channel == nil {
+		peerLogger.Errorf("[channel %s] channel not associated with this peer", cid)
 		return nil
 	}
-	return chain.cs.bundleSource.ChannelConfig().ConfigtxValidator()
+	return channel.BundleSource().ConfigtxValidator()
 }
 
-// GetResourceConfig returns an instance of a object that represents
-// current resource configuration tree of the specified channel. The
-// ConfigProto method of the returned object can be used to get the
-// proto representing the resource configuration.
-func (*configSupport) GetResourceConfig(channel string) cc.Config {
-	chains.RLock()
-	defer chains.RUnlock()
-	chain := chains.list[channel]
-	if chain == nil {
-		peerLogger.Error("GetResourceConfig: channel", channel, "not found in the list of channels associated with this peer")
-		return nil
+// Operations exposes an interface to the package level functions that operated
+// on singletons in the package. This is a step towards moving from package
+// level data for the peer to instance level data.
+type Operations interface {
+	GetApplicationConfig(cid string) (channelconfig.Application, bool)
+	GetLedger(cid string) ledger.PeerLedger
+	GetPolicyManager(cid string) policies.Manager
+}
+
+type Peer struct {
+	Server            *comm.GRPCServer
+	ServerConfig      comm.ServerConfig
+	CredentialSupport *comm.CredentialSupport
+	StoreProvider     transientstore.StoreProvider
+	GossipService     *gossipservice.GossipService
+
+	// validationWorkersSemaphore is used to limit the number of concurrent validation
+	// go routines.
+	validationWorkersSemaphore semaphore.Semaphore
+
+	pluginMapper       plugin.Mapper
+	channelInitializer func(cid string)
+
+	// channels is a map of channelID to channel
+	mutex    sync.RWMutex
+	channels map[string]*Channel
+}
+
+// Default provides in implementation of the Peer that provides
+// access to the package level state.
+var Default *Peer = &Peer{}
+
+func (p *Peer) openStore(cid string) (transientstore.Store, error) {
+	store, err := p.StoreProvider.OpenStore(cid)
+	if err != nil {
+		return nil, err
 	}
-	return chain.cs.bundleSource.ConfigtxValidator()
+
+	return store, nil
+}
+
+func (p *Peer) CreateChannel(
+	cb *common.Block,
+	sccp sysccprovider.SystemChaincodeProvider,
+	deployedCCInfoProvider ledger.DeployedChaincodeInfoProvider,
+	legacyLifecycleValidation plugindispatcher.LifecycleResources,
+	newLifecycleValidation plugindispatcher.CollectionAndLifecycleResources,
+) error {
+	cid, err := protoutil.GetChainIDFromBlock(cb)
+	if err != nil {
+		return err
+	}
+
+	l, err := ledgermgmt.CreateLedger(cb)
+	if err != nil {
+		return errors.WithMessage(err, "cannot create ledger from genesis block")
+	}
+
+	if err := p.createChannel(cid, l, cb, sccp, p.pluginMapper, deployedCCInfoProvider, legacyLifecycleValidation, newLifecycleValidation); err != nil {
+		return err
+	}
+
+	p.initChannel(cid)
+	return nil
+}
+
+// retrievePersistedChannelConfig retrieves the persisted channel config from statedb
+func retrievePersistedChannelConfig(ledger ledger.PeerLedger) (*common.Config, error) {
+	qe, err := ledger.NewQueryExecutor()
+	if err != nil {
+		return nil, err
+	}
+	defer qe.Done()
+	return retrievePersistedConf(qe, channelConfigKey)
+}
+
+// createChannel creates a new channel object and insert it into the channels slice.
+func (p *Peer) createChannel(
+	cid string,
+	l ledger.PeerLedger,
+	cb *common.Block,
+	sccp sysccprovider.SystemChaincodeProvider,
+	pluginMapper plugin.Mapper,
+	deployedCCInfoProvider ledger.DeployedChaincodeInfoProvider,
+	legacyLifecycleValidation plugindispatcher.LifecycleResources,
+	newLifecycleValidation plugindispatcher.CollectionAndLifecycleResources,
+) error {
+	chanConf, err := retrievePersistedChannelConfig(l)
+	if err != nil {
+		return err
+	}
+
+	var bundle *channelconfig.Bundle
+	if chanConf != nil {
+		bundle, err = channelconfig.NewBundle(cid, chanConf)
+		if err != nil {
+			return err
+		}
+	} else {
+		// Config was only stored in the statedb starting with v1.1 binaries
+		// so if the config is not found there, extract it manually from the config block
+		envelopeConfig, err := protoutil.ExtractEnvelope(cb, 0)
+		if err != nil {
+			return err
+		}
+
+		bundle, err = channelconfig.NewBundleFromEnvelope(envelopeConfig)
+		if err != nil {
+			return err
+		}
+	}
+
+	capabilitiesSupportedOrPanic(bundle)
+
+	channelconfig.LogSanityChecks(bundle)
+
+	gossipEventer := p.GossipService.NewConfigEventer()
+
+	gossipCallbackWrapper := func(bundle *channelconfig.Bundle) {
+		ac, ok := bundle.ApplicationConfig()
+		if !ok {
+			// TODO, handle a missing ApplicationConfig more gracefully
+			ac = nil
+		}
+		gossipEventer.ProcessConfigUpdate(&gossipSupport{
+			Validator:   bundle.ConfigtxValidator(),
+			Application: ac,
+			Channel:     bundle.ChannelConfig(),
+		})
+		p.GossipService.SuspectPeers(func(identity api.PeerIdentityType) bool {
+			// TODO: this is a place-holder that would somehow make the MSP layer suspect
+			// that a given certificate is revoked, or its intermediate CA is revoked.
+			// In the meantime, before we have such an ability, we return true in order
+			// to suspect ALL identities in order to validate all of them.
+			return true
+		})
+	}
+
+	trustedRootsCallbackWrapper := func(bundle *channelconfig.Bundle) {
+		p.updateTrustedRoots(bundle)
+	}
+
+	mspCallback := func(bundle *channelconfig.Bundle) {
+		// TODO remove once all references to mspmgmt are gone from peer code
+		mspmgmt.XXXSetMSPManager(cid, bundle.MSPManager())
+	}
+
+	c := &Channel{
+		cb:        cb,
+		ledger:    l,
+		resources: bundle,
+	}
+
+	c.bundleSource = channelconfig.NewBundleSource(
+		bundle,
+		gossipCallbackWrapper,
+		trustedRootsCallbackWrapper,
+		mspCallback,
+		c.bundleUpdate,
+	)
+
+	committer := committer.NewLedgerCommitterReactive(l, c.setConfigBlock)
+	validator := txvalidator.NewTxValidator(
+		cid,
+		p.validationWorkersSemaphore,
+		c,
+		&vir.ValidationInfoRetrieveShim{
+			New:    newLifecycleValidation,
+			Legacy: legacyLifecycleValidation,
+		},
+		&CollectionInfoShim{
+			CollectionAndLifecycleResources: newLifecycleValidation,
+			ChannelID:                       bundle.ConfigtxValidator().ChainID(),
+		},
+		sccp,
+		p.pluginMapper,
+		policies.PolicyManagerGetterFunc(p.GetPolicyManager),
+	)
+
+	ordererAddresses := bundle.ChannelConfig().OrdererAddresses()
+	if len(ordererAddresses) == 0 {
+		return errors.New("no ordering service endpoint provided in configuration block")
+	}
+
+	// TODO: does someone need to call Close() on the transientStoreFactory at shutdown of the peer?
+	store, err := p.openStore(bundle.ConfigtxValidator().ChainID())
+	if err != nil {
+		return errors.Wrapf(err, "[channel %s] failed opening transient store", bundle.ConfigtxValidator().ChainID())
+	}
+	c.store = store
+
+	simpleCollectionStore := privdata.NewSimpleCollectionStore(l, deployedCCInfoProvider)
+	p.GossipService.InitializeChannel(bundle.ConfigtxValidator().ChainID(), ordererAddresses, gossipservice.Support{
+		Validator:       validator,
+		Committer:       committer,
+		Store:           store,
+		CollectionStore: simpleCollectionStore,
+		IdDeserializeFactory: gossipprivdata.IdentityDeserializerFactoryFunc(func(chainID string) msp.IdentityDeserializer {
+			return mspmgmt.GetManagerForChain(chainID)
+		}),
+	})
+
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	if p.channels == nil {
+		p.channels = map[string]*Channel{}
+	}
+	p.channels[cid] = c
+
+	return nil
+}
+
+func (p *Peer) Channel(cid string) *Channel {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+	if c, ok := p.channels[cid]; ok {
+		return c
+	}
+	return nil
+}
+
+func (p *Peer) StoreForChannel(cid string) transientstore.Store {
+	if c := p.Channel(cid); c != nil {
+		return c.Store()
+	}
+	return nil
+}
+
+// GetChannelConfig returns the channel configuration of the channel with channel ID. Note that this
+// call returns nil if channel cid has not been created.
+func (p *Peer) GetChannelConfig(cid string) channelconfig.Resources {
+	if c := p.Channel(cid); c != nil {
+		return c.Resources()
+	}
+	return nil
+}
+
+// GetChannelsInfo returns an array with information about all channels for
+// this peer.
+func (p *Peer) GetChannelsInfo() []*pb.ChannelInfo {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+
+	var channelInfos []*pb.ChannelInfo
+	for key := range p.channels {
+		ci := &pb.ChannelInfo{ChannelId: key}
+		channelInfos = append(channelInfos, ci)
+	}
+	return channelInfos
+}
+
+// GetStableChannelConfig returns the stable channel configuration of the channel with channel ID.
+// Note that this call returns nil if channel cid has not been created.
+func (p *Peer) GetStableChannelConfig(cid string) channelconfig.Resources {
+	if c := p.Channel(cid); c != nil {
+		return c.BundleSource().StableBundle()
+	}
+	return nil
+}
+
+// GetCurrConfigBlock returns the cached config block of the specified channel.
+// Note that this call returns nil if channel cid has not been created.
+func (p *Peer) GetCurrConfigBlock(cid string) *common.Block {
+	if c := p.Channel(cid); c != nil {
+		return c.ConfigBlock()
+	}
+	return nil
+}
+
+// GetLedger returns the ledger of the channel with channel ID. Note that this
+// call returns nil if channel cid has not been created.
+func (p *Peer) GetLedger(cid string) ledger.PeerLedger {
+	if c := p.Channel(cid); c != nil {
+		return c.Ledger()
+	}
+	return nil
+}
+
+// GetMSPIDs returns the ID of each application MSP defined on this channel
+func (p *Peer) GetMSPIDs(cid string) []string {
+	if c := p.Channel(cid); c != nil {
+		return c.GetMSPIDs()
+	}
+	return nil
+}
+
+// GetPolicyManager returns the policy manager of the channel with channel ID. Note that this
+// call returns nil if channel cid has not been created.
+func (p *Peer) GetPolicyManager(cid string) policies.Manager {
+	if c := p.Channel(cid); c != nil {
+		return c.Resources().PolicyManager()
+	}
+	return nil
+}
+
+// initChannel takes care to initialize channel after peer joined, for example deploys system CCs
+func (p *Peer) initChannel(cid string) {
+	if p.channelInitializer != nil {
+		// Initialize chaincode, namely deploy system CC
+		peerLogger.Debugf("Initializing channel %s", cid)
+		p.channelInitializer(cid)
+	}
+}
+
+func (p *Peer) GetApplicationConfig(cid string) (channelconfig.Application, bool) {
+	cc := p.GetChannelConfig(cid)
+	if cc == nil {
+		return nil, false
+	}
+
+	return cc.ApplicationConfig()
+}
+
+// Initialize sets up any channels that the peer has from the persistence. This
+// function should be called at the start up when the ledger and gossip
+// ready
+func (p *Peer) Initialize(
+	init func(string),
+	sccp sysccprovider.SystemChaincodeProvider,
+	pm plugin.Mapper,
+	deployedCCInfoProvider ledger.DeployedChaincodeInfoProvider,
+	membershipProvider ledger.MembershipInfoProvider,
+	legacyLifecycleValidation plugindispatcher.LifecycleResources,
+	newLifecycleValidation plugindispatcher.CollectionAndLifecycleResources,
+	nWorkers int,
+) {
+	// TODO: exported dep fields or constructor
+	p.validationWorkersSemaphore = semaphore.New(nWorkers)
+	p.pluginMapper = pm
+	p.channelInitializer = init
+
+	ledgerIds, err := ledgermgmt.GetLedgerIDs()
+	if err != nil {
+		panic(fmt.Errorf("error in initializing ledgermgmt: %s", err))
+	}
+
+	for _, cid := range ledgerIds {
+		peerLogger.Infof("Loading chain %s", cid)
+		ledger, err := ledgermgmt.OpenLedger(cid)
+		if err != nil {
+			peerLogger.Errorf("Failed to load ledger %s(%s)", cid, err)
+			peerLogger.Debugf("Error while loading ledger %s with message %s. We continue to the next ledger rather than abort.", cid, err)
+			continue
+		}
+		cb, err := getCurrConfigBlockFromLedger(ledger)
+		if err != nil {
+			peerLogger.Errorf("Failed to find config block on ledger %s(%s)", cid, err)
+			peerLogger.Debugf("Error while looking for config block on ledger %s with message %s. We continue to the next ledger rather than abort.", cid, err)
+			continue
+		}
+		// Create a chain if we get a valid ledger with config block
+		err = p.createChannel(cid, ledger, cb, sccp, pm, deployedCCInfoProvider, legacyLifecycleValidation, newLifecycleValidation)
+		if err != nil {
+			peerLogger.Errorf("Failed to load chain %s(%s)", cid, err)
+			peerLogger.Debugf("Error reloading chain %s with message %s. We continue to the next chain rather than abort.", cid, err)
+			continue
+		}
+
+		p.initChannel(cid)
+	}
 }

@@ -1,44 +1,30 @@
 Setting up the development environment
 --------------------------------------
 
-Overview
-~~~~~~~~
-
-Prior to the v1.0.0 release, the development environment utilized Vagrant
-running an Ubuntu image, which in turn launched Docker containers as a
-means of ensuring a consistent experience for developers who might be
-working with varying platforms, such as macOS, Windows, Linux, or
-whatever. Advances in Docker have enabled native support on the most
-popular development platforms: macOS and Windows. Hence, we have
-reworked our build to take full advantage of these advances. While we
-still maintain a Vagrant based approach that can be used for older
-versions of macOS and Windows that Docker does not support, we strongly
-encourage that the non-Vagrant development setup be used.
-
-Note that while the Vagrant-based development setup could not be used in
-a cloud context, the Docker-based build does support cloud platforms
-such as AWS, Azure, Google and IBM to name a few. Please follow the
-instructions for Ubuntu builds, below.
-
 Prerequisites
 ~~~~~~~~~~~~~
 
 -  `Git client <https://git-scm.com/downloads>`__
--  `Go <https://golang.org/>`__ - 1.9 or later (for v1.0.X releases, use
-   Go 1.7.X)
+-  `Go <https://golang.org/dl/>`__ - version 1.12.x
 -  (macOS)
    `Xcode <https://itunes.apple.com/us/app/xcode/id497799835?mt=12>`__
    must be installed
--  `Docker <https://www.docker.com/products/overview>`__ - 17.06.2-ce or later
+-  `Docker <https://www.docker.com/get-docker>`__ - 17.06.2-ce or later
 -  `Docker Compose <https://docs.docker.com/compose/>`__ - 1.14.0 or later
--  `Pip <https://pip.pypa.io/en/stable/installing/>`__
 -  (macOS) you may need to install gnutar, as macOS comes with bsdtar
    as the default, but the build uses some gnutar flags. You can use
    Homebrew to install it as follows:
 
 ::
 
-    brew install gnu-tar --with-default-names
+    brew install gnu-tar
+
+-  (macOS) If you install gnutar, you should prepend the "gnubin"
+   directory to the $PATH environment variable with something like:
+
+::
+
+    export PATH=/usr/local/opt/gnu-tar/libexec/gnubin:$PATH
 
 -  (macOS) `Libtool <https://www.gnu.org/software/libtool/>`__. You can use
    Homebrew to install it as follows:
@@ -55,16 +41,6 @@ Prerequisites
 
 -  Note: The BIOS Enabled Virtualization may be within the CPU or
    Security settings of the BIOS
-
-``pip`` and ``behave``
-~~~~~~~~~~~~~~~~~~~~~~
-
-::
-
-    pip install --upgrade pip
-
-    #PIP packages required for some behave tests
-    pip install -r devenv/bddtests-requirements.txt
 
 
 Steps
@@ -103,8 +79,77 @@ If you continue with ``core.autocrlf`` set to ``true``, the
 
 ``./setup.sh: /bin/bash^M: bad interpreter: No such file or directory``
 
+Configuring Gerrit to Use SSH
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Gerrit uses SSH to interact with your Git client. If you already have an SSH
+key pair, you can skip the part of this section that explains how to generate one.
+
+What follows explains how to generate an SSH key pair in a Linux environment ---
+follow the equivalent steps on your OS.
+
+First, create an SSH key pair with the command:
+
+::
+
+    ssh-keygen -t rsa -C "John Doe john.doe@example.com"
+
+**Note:** This will ask you for a password to protect the private key as
+it generates a unique key. Please keep this password private, and DO NOT
+enter a blank password.
+
+The generated SSH key pair can be found in the files ``~/.ssh/id_rsa`` and
+``~/.ssh/id_rsa.pub``.
+
+Next, add the private key in the ``id_rsa`` file to your key ring, e.g.:
+
+::
+
+    ssh-add ~/.ssh/id_rsa
+
+Finally, add the public key of the generated key pair to the Gerrit server,
+with the following steps:
+
+1. Go to
+   `Gerrit <https://gerrit.hyperledger.org/r/#/admin/projects/fabric>`__.
+
+2. Click on your account name in the upper right corner.
+
+3. From the pop-up menu, select ``Settings``.
+
+4. On the left side menu, click on ``SSH Public Keys``.
+
+5. Paste the contents of your public key ``~/.ssh/id_rsa.pub`` and click
+   ``Add key``.
+
+**Note:** The ``id_rsa.pub`` file can be opened with any text editor.
+Ensure that all the contents of the file are selected, copied and pasted
+into the ``Add SSH key`` window in Gerrit.
+
+**Note:** The SSH key generation instructions operate on the assumption
+that you are using the default naming. It is possible to generate
+multiple SSH keys and to name the resulting files differently. See the
+`ssh-keygen <https://en.wikipedia.org/wiki/Ssh-keygen>`__ documentation
+for details on how to do that. Once you have generated non-default keys,
+you need to configure SSH to use the correct key for Gerrit. In that
+case, you need to create a ``~/.ssh/config`` file modeled after the one
+below.
+
+::
+
+    host gerrit.hyperledger.org
+     HostName gerrit.hyperledger.org
+     IdentityFile ~/.ssh/id_rsa_hyperledger_gerrit
+     User <LFID>
+
+where <LFID> is your Linux Foundation ID and the value of IdentityFile is the
+name of the public key file you generated.
+
+**Warning:** Potential Security Risk! Do not copy your private key
+``~/.ssh/id_rsa``. Use only the public ``~/.ssh/id_rsa.pub``.
+
 Cloning the Hyperledger Fabric source
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Since Hyperledger Fabric is written in ``Go``, you'll need to
 clone the source repository to your $GOPATH/src directory. If your $GOPATH
@@ -127,75 +172,7 @@ For brevity, the command is as follows:
     git clone ssh://LFID@gerrit.hyperledger.org:29418/fabric && scp -p -P 29418 LFID@gerrit.hyperledger.org:hooks/commit-msg fabric/.git/hooks/
 
 **Note:** Of course, you would want to replace ``LFID`` with your own
-:doc:`Linux Foundation ID <../Gerrit/lf-account>`.
-
-Bootstrapping the VM using Vagrant
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-If you are planning on using the Vagrant developer environment, the
-following steps apply. **Again, we recommend against its use except for
-developers that are limited to older versions of macOS and Windows that
-are not supported by Docker for Mac or Windows.**
-
-::
-
-    cd $GOPATH/src/github.com/hyperledger/fabric/devenv
-    vagrant up
-
-Go get coffee... this will take a few minutes. Once complete, you should
-be able to ``ssh`` into the Vagrant VM just created.
-
-::
-
-    vagrant ssh
-
-Once inside the VM, you can find the source under
-``$GOPATH/src/github.com/hyperledger/fabric``. It is also mounted as
-``/hyperledger``.
-
-Building Hyperledger Fabric
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Once you have all the dependencies installed, and have cloned the
-repository, you can proceed to :doc:`build and test <build>` Hyperledger
-Fabric.
-
-Notes
-~~~~~
-
-**NOTE:** Any time you change any of the files in your local fabric
-directory (under ``$GOPATH/src/github.com/hyperledger/fabric``), the
-update will be instantly available within the VM fabric directory.
-
-**NOTE:** If you intend to run the development environment behind an
-HTTP Proxy, you need to configure the guest so that the provisioning
-process may complete. You can achieve this via the *vagrant-proxyconf*
-plugin. Install with ``vagrant plugin install vagrant-proxyconf`` and
-then set the VAGRANT\_HTTP\_PROXY and VAGRANT\_HTTPS\_PROXY environment
-variables *before* you execute ``vagrant up``. More details are
-available here: https://github.com/tmatilai/vagrant-proxyconf/
-
-**NOTE:** The first time you run this command it may take quite a while
-to complete (it could take 30 minutes or more depending on your
-environment) and at times it may look like it's not doing anything. As
-long you don't get any error messages just leave it alone, it's all
-good, it's just cranking.
-
-**NOTE to Windows 10 Users:** There is a known problem with vagrant on
-Windows 10 (see
-`mitchellh/vagrant#6754 <https://github.com/mitchellh/vagrant/issues/6754>`__).
-If the ``vagrant up`` command fails it may be because you do not have
-the Microsoft Visual C++ Redistributable package installed. You can
-download the missing package at the following address:
-http://www.microsoft.com/en-us/download/details.aspx?id=8328
-
-**NOTE:** The inclusion of the miekg/pkcs11 package introduces
-an external dependency on the libtdl.h header file during
-a build of fabric. Please ensure your libtool and libtdhl-dev packages
-are installed. Otherwise, you may get a ltdl.h header missing error.
-You can download the missing package by command:
-``sudo apt-get install -y build-essential git make curl unzip g++ libtool``.
+Linux Foundation ID.
 
 .. Licensed under Creative Commons Attribution 4.0 International License
    https://creativecommons.org/licenses/by/4.0/
-

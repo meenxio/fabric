@@ -16,11 +16,14 @@ import (
 )
 
 //MockInitialize resets chains for test env
-func MockInitialize() {
-	ledgermgmt.InitializeTestEnvWithCustomProcessors(ConfigTxProcessors)
-	chains.list = nil
-	chains.list = make(map[string]*chain)
-	chainInitializer = func(string) { return }
+func MockInitialize() (cleanup func(), err error) {
+	cleanup, err = ledgermgmt.InitializeTestEnvWithInitializer(
+		&ledgermgmt.Initializer{},
+	)
+	Default.mutex.Lock()
+	Default.channels = make(map[string]*Channel)
+	Default.mutex.Unlock()
+	return cleanup, err
 }
 
 // MockCreateChain used for creating a ledger for a chain for tests
@@ -29,25 +32,28 @@ func MockCreateChain(cid string) error {
 	var ledger ledger.PeerLedger
 	var err error
 
-	if ledger = GetLedger(cid); ledger == nil {
+	if ledger = Default.GetLedger(cid); ledger == nil {
 		gb, _ := configtxtest.MakeGenesisBlock(cid)
 		if ledger, err = ledgermgmt.CreateLedger(gb); err != nil {
 			return err
 		}
 	}
 
-	chains.Lock()
-	defer chains.Unlock()
+	Default.mutex.Lock()
+	defer Default.mutex.Unlock()
 
-	chains.list[cid] = &chain{
-		cs: &chainSupport{
-			Resources: &mockchannelconfig.Resources{
-				PolicyManagerVal: &mockpolicies.Manager{
-					Policy: &mockpolicies.Policy{},
-				},
-				ConfigtxValidatorVal: &mockconfigtx.Validator{},
+	if Default.channels == nil {
+		Default.channels = map[string]*Channel{}
+	}
+
+	Default.channels[cid] = &Channel{
+		ledger: ledger,
+		resources: &mockchannelconfig.Resources{
+			PolicyManagerVal: &mockpolicies.Manager{
+				Policy: &mockpolicies.Policy{},
 			},
-			ledger: ledger,
+			ConfigtxValidatorVal: &mockconfigtx.Validator{},
+			ApplicationConfigVal: &mockchannelconfig.MockApplication{CapabilitiesRv: &mockchannelconfig.MockApplicationCapabilities{}},
 		},
 	}
 

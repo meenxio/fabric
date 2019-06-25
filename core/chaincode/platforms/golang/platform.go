@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package golang
@@ -20,28 +10,25 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
-	"sort"
-
-	"github.com/hyperledger/fabric/common/metadata"
+	"github.com/hyperledger/fabric/core/chaincode/platforms/ccmetadata"
 	"github.com/hyperledger/fabric/core/chaincode/platforms/util"
-	ccmetadata "github.com/hyperledger/fabric/core/common/ccprovider/metadata"
 	cutil "github.com/hyperledger/fabric/core/container/util"
 	pb "github.com/hyperledger/fabric/protos/peer"
+	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 )
 
 // Platform for chaincodes written in Go
-type Platform struct {
-}
+type Platform struct{}
 
 // Returns whether the given file or directory exists or not
 func pathExists(path string) (bool, error) {
@@ -55,14 +42,14 @@ func pathExists(path string) (bool, error) {
 	return true, err
 }
 
-func decodeUrl(spec *pb.ChaincodeSpec) (string, error) {
+func decodeUrl(path string) (string, error) {
 	var urlLocation string
-	if strings.HasPrefix(spec.ChaincodeId.Path, "http://") {
-		urlLocation = spec.ChaincodeId.Path[7:]
-	} else if strings.HasPrefix(spec.ChaincodeId.Path, "https://") {
-		urlLocation = spec.ChaincodeId.Path[8:]
+	if strings.HasPrefix(path, "http://") {
+		urlLocation = path[7:]
+	} else if strings.HasPrefix(path, "https://") {
+		urlLocation = path[8:]
 	} else {
-		urlLocation = spec.ChaincodeId.Path
+		urlLocation = path
 	}
 
 	if len(urlLocation) < 2 {
@@ -84,7 +71,7 @@ func getGopath() (string, error) {
 	// Only take the first element of GOPATH
 	splitGoPath := filepath.SplitList(env["GOPATH"])
 	if len(splitGoPath) == 0 {
-		return "", fmt.Errorf("invalid GOPATH environment variable value:[%s]", env["GOPATH"])
+		return "", fmt.Errorf("invalid GOPATH environment variable value: %s", env["GOPATH"])
 	}
 	return splitGoPath[0], nil
 }
@@ -99,9 +86,14 @@ func filter(vs []string, f func(string) bool) []string {
 	return vsf
 }
 
+// Name returns the name of this platform
+func (p *Platform) Name() string {
+	return pb.ChaincodeSpec_GOLANG.String()
+}
+
 // ValidateSpec validates Go chaincodes
-func (goPlatform *Platform) ValidateSpec(spec *pb.ChaincodeSpec) error {
-	path, err := url.Parse(spec.ChaincodeId.Path)
+func (p *Platform) ValidatePath(rawPath string) error {
+	path, err := url.Parse(rawPath)
 	if err != nil || path == nil {
 		return fmt.Errorf("invalid path: %s", err)
 	}
@@ -114,7 +106,7 @@ func (goPlatform *Platform) ValidateSpec(spec *pb.ChaincodeSpec) error {
 		if err != nil {
 			return err
 		}
-		pathToCheck := filepath.Join(gopath, "src", spec.ChaincodeId.Path)
+		pathToCheck := filepath.Join(gopath, "src", rawPath)
 		exists, err := pathExists(pathToCheck)
 		if err != nil {
 			return fmt.Errorf("error validating chaincode path: %s", err)
@@ -126,13 +118,7 @@ func (goPlatform *Platform) ValidateSpec(spec *pb.ChaincodeSpec) error {
 	return nil
 }
 
-func (goPlatform *Platform) ValidateDeploymentSpec(cds *pb.ChaincodeDeploymentSpec) error {
-
-	if cds.CodePackage == nil || len(cds.CodePackage) == 0 {
-		// Nothing to validate if no CodePackage was included
-		return nil
-	}
-
+func (p *Platform) ValidateCodePackage(code []byte) error {
 	// FAB-2122: Scan the provided tarball to ensure it only contains source-code under
 	// /src/$packagename.  We do not want to allow something like ./pkg/shady.a to be installed under
 	// $GOPATH within the container.  Note, we do not look deeper than the path at this time
@@ -143,8 +129,8 @@ func (goPlatform *Platform) ValidateDeploymentSpec(cds *pb.ChaincodeDeploymentSp
 	// the container itself needs to be the last line of defense and be configured to be
 	// resilient in enforcing constraints. However, we should still do our best to keep as much
 	// garbage out of the system as possible.
-	re := regexp.MustCompile(`(/)?src/.*`)
-	is := bytes.NewReader(cds.CodePackage)
+	re := regexp.MustCompile(`^(/)?(src|META-INF)/.*`)
+	is := bytes.NewReader(code)
 	gr, err := gzip.NewReader(is)
 	if err != nil {
 		return fmt.Errorf("failure opening codepackage gzip stream: %s", err)
@@ -180,6 +166,20 @@ func (goPlatform *Platform) ValidateDeploymentSpec(cds *pb.ChaincodeDeploymentSp
 	}
 
 	return nil
+}
+
+type Sources []SourceDescriptor
+
+func (s Sources) Len() int {
+	return len(s)
+}
+
+func (s Sources) Swap(i, j int) {
+	s[i], s[j] = s[j], s[i]
+}
+
+func (s Sources) Less(i, j int) bool {
+	return strings.Compare(s[i].Name, s[j].Name) < 0
 }
 
 // Vendor any packages that are not already within our chaincode's primary package
@@ -251,14 +251,14 @@ func vendorDependencies(pkg string, files Sources) {
 }
 
 // Generates a deployment payload for GOLANG as a series of src/$pkg entries in .tar.gz format
-func (goPlatform *Platform) GetDeploymentPayload(spec *pb.ChaincodeSpec) ([]byte, error) {
+func (p *Platform) GetDeploymentPayload(path string) ([]byte, error) {
 
 	var err error
 
 	// --------------------------------------------------------------------------------------
 	// retrieve a CodeDescriptor from either HTTP or the filesystem
 	// --------------------------------------------------------------------------------------
-	code, err := getCode(spec)
+	code, err := getCode(path)
 	if err != nil {
 		return nil, err
 	}
@@ -371,7 +371,6 @@ func (goPlatform *Platform) GetDeploymentPayload(spec *pb.ChaincodeSpec) ([]byte
 	// from the filtered list
 	// --------------------------------------------------------------------------------------
 	for dep := range deps {
-
 		logger.Debugf("processing dep: %s", dep)
 
 		// Each dependency should either be in our GOPATH or GOROOT.  We are not interested in packaging
@@ -428,22 +427,17 @@ func (goPlatform *Platform) GetDeploymentPayload(spec *pb.ChaincodeSpec) ([]byte
 	tw := tar.NewWriter(gw)
 
 	for _, file := range files {
-
-		// file.Path represents os localpath
-		// file.Name represents tar packagepath
-
 		// If the file is metadata rather than golang code, remove the leading go code path, for example:
 		// original file.Name:  src/github.com/hyperledger/fabric/examples/chaincode/go/marbles02/META-INF/statedb/couchdb/indexes/indexOwner.json
 		// updated file.Name:   META-INF/statedb/couchdb/indexes/indexOwner.json
 		if file.IsMetadata {
-
 			file.Name, err = filepath.Rel(filepath.Join("src", code.Pkg), file.Name)
 			if err != nil {
 				return nil, fmt.Errorf("This error was caused by bad packaging of the metadata.  The file [%s] is marked as MetaFile, however not located under META-INF   Error:[%s]", file.Name, err)
 			}
 
 			// Split the tar location (file.Name) into a tar package directory and filename
-			packageDir, filename := filepath.Split(file.Name)
+			_, filename := filepath.Split(file.Name)
 
 			// Hidden files are not supported as metadata, therefore ignore them.
 			// User often doesn't know that hidden files are there, and may not be able to delete them, therefore warn user rather than error out.
@@ -458,9 +452,8 @@ func (goPlatform *Platform) GetDeploymentPayload(spec *pb.ChaincodeSpec) ([]byte
 			}
 
 			// Validate metadata file for inclusion in tar
-			// Validation is based on the passed metadata directory, e.g. META-INF/statedb/couchdb/indexes
-			// Clean metadata directory to remove trailing slash
-			err = ccmetadata.ValidateMetadataFile(filename, fileBytes, filepath.Clean(packageDir))
+			// Validation is based on the passed filename with path
+			err = ccmetadata.ValidateMetadataFile(file.Name, fileBytes)
 			if err != nil {
 				return nil, err
 			}
@@ -472,22 +465,23 @@ func (goPlatform *Platform) GetDeploymentPayload(spec *pb.ChaincodeSpec) ([]byte
 		}
 	}
 
-	tw.Close()
-	gw.Close()
+	err = tw.Close()
+	if err == nil {
+		err = gw.Close()
+	}
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to create tar for chaincode")
+	}
 
 	return payload.Bytes(), nil
 }
 
-func (goPlatform *Platform) GenerateDockerfile(cds *pb.ChaincodeDeploymentSpec) (string, error) {
-
+func (p *Platform) GenerateDockerfile() (string, error) {
 	var buf []string
-
-	buf = append(buf, "FROM "+cutil.GetDockerfileFromConfig("chaincode.golang.runtime"))
+	buf = append(buf, "FROM "+util.GetDockerfileFromConfig("chaincode.golang.runtime"))
 	buf = append(buf, "ADD binpackage.tar /usr/local/bin")
 
-	dockerFileContents := strings.Join(buf, "\n")
-
-	return dockerFileContents, nil
+	return strings.Join(buf, "\n"), nil
 }
 
 const staticLDFlagsOpts = "-ldflags \"-linkmode external -extldflags '-static'\""
@@ -500,34 +494,20 @@ func getLDFlagsOpts() string {
 	return staticLDFlagsOpts
 }
 
-func (goPlatform *Platform) GenerateDockerBuild(cds *pb.ChaincodeDeploymentSpec, tw *tar.Writer) error {
-	spec := cds.ChaincodeSpec
-
-	pkgname, err := decodeUrl(spec)
+func (p *Platform) DockerBuildOptions(path string) (util.DockerBuildOptions, error) {
+	pkgname, err := decodeUrl(path)
 	if err != nil {
-		return fmt.Errorf("could not decode url: %s", err)
+		return util.DockerBuildOptions{}, fmt.Errorf("could not decode url: %s", err)
 	}
 
 	ldflagsOpt := getLDFlagsOpts()
-	logger.Infof("building chaincode with ldflagsOpt: '%s'", ldflagsOpt)
+	return util.DockerBuildOptions{
+		Cmd: fmt.Sprintf("GOPATH=/chaincode/input:$GOPATH go build  %s -o /chaincode/output/chaincode %s", ldflagsOpt, pkgname),
+	}, nil
+}
 
-	var gotags string
-	// check if experimental features are enabled
-	if metadata.Experimental == "true" {
-		gotags = " experimental"
-	}
-	logger.Infof("building chaincode with tags: %s", gotags)
-
-	codepackage := bytes.NewReader(cds.CodePackage)
-	binpackage := bytes.NewBuffer(nil)
-	err = util.DockerBuild(util.DockerBuildOptions{
-		Cmd:          fmt.Sprintf("GOPATH=/chaincode/input:$GOPATH go build -tags \"%s\" %s -o /chaincode/output/chaincode %s", gotags, ldflagsOpt, pkgname),
-		InputStream:  codepackage,
-		OutputStream: binpackage,
-	})
-	if err != nil {
-		return err
-	}
-
-	return cutil.WriteBytesToPackage("binpackage.tar", binpackage.Bytes(), tw)
+// GetMetadataProvider fetches metadata provider given deployment spec
+func (p *Platform) GetMetadataAsTarEntries(code []byte) ([]byte, error) {
+	metadataProvider := ccmetadata.TargzMetadataProvider{Code: code}
+	return metadataProvider.GetMetadataAsTarEntries()
 }

@@ -1,59 +1,87 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+Copyright IBM Corp. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package statecouchdb
 
 import (
-	"strings"
+	"io/ioutil"
+	"os"
 	"testing"
+	"time"
 
+	"github.com/hyperledger/fabric/common/metrics/disabled"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/util/couchdb"
+	"github.com/stretchr/testify/assert"
 )
+
+var couchAddress string
 
 // TestVDBEnv provides a couch db backed versioned db for testing
 type TestVDBEnv struct {
 	t          testing.TB
 	DBProvider statedb.VersionedDBProvider
+	config     *couchdb.Config
 }
 
 // NewTestVDBEnv instantiates and new couch db backed TestVDB
 func NewTestVDBEnv(t testing.TB) *TestVDBEnv {
 	t.Logf("Creating new TestVDBEnv")
-
-	dbProvider, _ := NewVersionedDBProvider()
-	testVDBEnv := &TestVDBEnv{t, dbProvider}
+	redoPath, err := ioutil.TempDir("", "cvdbenv")
+	if err != nil {
+		t.Fatalf("Failed to create redo log directory: %s", err)
+	}
+	config := &couchdb.Config{
+		Address:             couchAddress,
+		Username:            "",
+		Password:            "",
+		InternalQueryLimit:  1000,
+		MaxBatchUpdateSize:  1000,
+		MaxRetries:          3,
+		MaxRetriesOnStartup: 20,
+		RequestTimeout:      35 * time.Second,
+		RedoLogPath:         redoPath,
+	}
+	dbProvider, err := NewVersionedDBProvider(config, &disabled.Provider{})
+	if err != nil {
+		t.Fatalf("Error creating CouchDB Provider: %s", err)
+	}
+	testVDBEnv := &TestVDBEnv{
+		t:          t,
+		DBProvider: dbProvider,
+		config:     config,
+	}
 	// No cleanup for new test environment.  Need to cleanup per test for each DB used in the test.
 	return testVDBEnv
 }
 
-// Cleanup drops the test couch databases and closes the db provider
-func (env *TestVDBEnv) Cleanup(dbName string) {
-	env.t.Logf("Cleaningup TestVDBEnv")
+func (env *TestVDBEnv) CloseAndReopen() {
 	env.DBProvider.Close()
-	CleanupDB(dbName)
+	dbProvider, _ := NewVersionedDBProvider(env.config, &disabled.Provider{})
+	env.DBProvider = dbProvider
 }
 
-// CleanupDB drops the test couch databases
-func CleanupDB(dbName string) {
-	//create a new connection
-	couchDBDef := couchdb.GetCouchDBDefinition()
-	couchInstance, _ := couchdb.CreateCouchInstance(couchDBDef.URL, couchDBDef.Username, couchDBDef.Password,
-		couchDBDef.MaxRetries, couchDBDef.MaxRetriesOnStartup, couchDBDef.RequestTimeout)
-	db := couchdb.CouchDatabase{CouchInstance: *couchInstance, DBName: strings.ToLower(dbName)}
-	//drop the test database
-	db.DropDatabase()
+// Cleanup drops the test couch databases and closes the db provider
+func (env *TestVDBEnv) Cleanup() {
+	env.t.Logf("Cleaningup TestVDBEnv")
+	CleanupDB(env.t, env.DBProvider)
+	env.DBProvider.Close()
+	os.RemoveAll(env.config.RedoLogPath)
+}
+
+func CleanupDB(t testing.TB, dbProvider statedb.VersionedDBProvider) {
+	couchdbProvider, _ := dbProvider.(*VersionedDBProvider)
+	for _, v := range couchdbProvider.databases {
+		if _, err := v.metadataDB.DropDatabase(); err != nil {
+			assert.Failf(t, "DropDatabase %s fails. err: %v", v.metadataDB.DBName, err)
+		}
+
+		for _, db := range v.namespaceDBs {
+			if _, err := db.DropDatabase(); err != nil {
+				assert.Failf(t, "DropDatabase %s fails. err: %v", db.DBName, err)
+			}
+		}
+	}
 }

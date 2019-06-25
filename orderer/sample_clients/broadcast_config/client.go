@@ -1,18 +1,5 @@
-/*
-Copyright IBM Corp. 2016 All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright IBM Corp. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
 
 package main
 
@@ -22,17 +9,13 @@ import (
 	"fmt"
 	"os"
 
-	"google.golang.org/grpc"
-
-	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
+	genesisconfig "github.com/hyperledger/fabric/internal/configtxgen/localconfig"
 	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
 	"github.com/hyperledger/fabric/orderer/common/localconfig"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
+	"google.golang.org/grpc"
 )
-
-var conf *config.TopLevel
-var genConf *genesisconfig.Profile
 
 type broadcastClient struct {
 	ab.AtomicBroadcast_BroadcastClient
@@ -69,8 +52,12 @@ type argsImpl struct {
 	chainID        string
 }
 
+var conf *localconfig.TopLevel
+var genConf *genesisconfig.Profile
+
 func init() {
-	conf, err = config.Load()
+	var err error
+	conf, err = localconfig.Load()
 	if err != nil {
 		fmt.Println("failed to load config:", err)
 		os.Exit(1)
@@ -96,6 +83,12 @@ func main() {
 	flag.StringVar(&cmd.args.chainID, "chainID", "mychannel", "In case of a newChain command, the chain ID to create.")
 	flag.Parse()
 
+	signer, err := mspmgmt.GetLocalMSP().GetDefaultSigningIdentity()
+	if err != nil {
+		fmt.Println("Failed to load local signing identity:", err)
+		os.Exit(0)
+	}
+
 	conn, err := grpc.Dial(srv, grpc.WithInsecure())
 	defer func() {
 		_ = conn.Close()
@@ -115,7 +108,12 @@ func main() {
 
 	switch cmd.name {
 	case "newChain":
-		env := newChainRequest(cmd.args.consensusType, cmd.args.creationPolicy, cmd.args.chainID)
+		env := newChainRequest(
+			cmd.args.consensusType,
+			cmd.args.creationPolicy,
+			cmd.args.chainID,
+			signer,
+		)
 		fmt.Println("Requesting the creation of chain", cmd.args.chainID)
 		fmt.Println(bc.broadcast(env))
 	default:

@@ -16,6 +16,7 @@ import (
 	"github.com/hyperledger/fabric/msp"
 	pb "github.com/hyperledger/fabric/protos/common"
 	mb "github.com/hyperledger/fabric/protos/msp"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -31,6 +32,10 @@ func createCollectionPolicyConfig(accessPolicy *pb.SignaturePolicyEnvelope) *pb.
 
 type mockIdentity struct {
 	idBytes []byte
+}
+
+func (id *mockIdentity) Anonymous() bool {
+	panic("implement me")
 }
 
 func (id *mockIdentity) ExpiresAt() time.Time {
@@ -86,11 +91,21 @@ func (md *mockDeserializer) IsWellFormed(_ *mb.SerializedIdentity) error {
 	return nil
 }
 
-func TestSetupBadConfig(t *testing.T) {
+func TestSetupWithBadConfig(t *testing.T) {
 	// set up simple collection with invalid data
 	var sc SimpleCollection
 	err := sc.Setup(&pb.StaticCollectionConfig{}, &mockDeserializer{})
 	assert.Error(t, err)
+
+	// create static collection config with faulty policy
+	collectionConfig := &pb.StaticCollectionConfig{
+		Name:              "test collection",
+		RequiredPeerCount: 1,
+		MemberOrgsPolicy:  getBadAccessPolicy([]string{"peer0", "peer1"}, 3),
+	}
+	err = sc.Setup(collectionConfig, &mockDeserializer{})
+	assert.Error(t, err)
+	assert.EqualError(t, err, "failed constructing policy object out of collection policy config: identity index out of range, requested 3, but identities length is 2")
 }
 
 func TestSetupGoodConfigCollection(t *testing.T) {
@@ -147,7 +162,7 @@ func TestSimpleCollectionFilter(t *testing.T) {
 	accessFilter := cap.AccessFilter()
 
 	// check filter: not a member of the collection
-	notMember := pb.SignedData{
+	notMember := protoutil.SignedData{
 		Identity:  []byte{1, 2, 3},
 		Signature: []byte{},
 		Data:      []byte{},
@@ -155,7 +170,7 @@ func TestSimpleCollectionFilter(t *testing.T) {
 	assert.False(t, accessFilter(notMember))
 
 	// check filter: member of the collection
-	member := pb.SignedData{
+	member := protoutil.SignedData{
 		Identity:  signers[0],
 		Signature: []byte{},
 		Data:      []byte{},

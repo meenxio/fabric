@@ -8,15 +8,16 @@ option go_package = "github.com/hyperledger/fabric/protos/gossip" ;
 
 package gossip;
 
+import "common/collection.proto";
 
 // Gossip
 service Gossip {
 
     // GossipStream is the gRPC stream used for sending and receiving messages
-    rpc GossipStream (stream Envelope) returns (stream Envelope) {}
+    rpc GossipStream (stream Envelope) returns (stream Envelope);
 
     // Ping is used to probe a remote peer's aliveness
-    rpc Ping (Empty) returns (Empty) {}
+    rpc Ping (Empty) returns (Empty);
 }
 
 
@@ -196,7 +197,7 @@ enum PullMsgType {
 // certain data blocks from a remote peer
 message DataRequest {
     uint64 nonce             = 1;
-    repeated string digests  = 2;
+    repeated bytes digests  = 2;
     PullMsgType msg_type     = 3;
 }
 
@@ -220,7 +221,7 @@ message DataUpdate {
 // to the initator peer and contains the data items it has
 message DataDigest {
     uint64 nonce             = 1;
-    repeated string digests  = 2; // Maybe change this to bitmap later on
+    repeated bytes digests  = 2; // Maybe change this to bitmap later on
     PullMsgType msg_type     = 3;
 }
 
@@ -254,6 +255,8 @@ message PrivatePayload {
     string namespace            = 2;
     string tx_id                = 3;
     bytes private_rwset         = 4;
+    uint64 private_sim_height  = 5;
+    common.CollectionConfigPackage collection_configs = 6;
 }
 
 // Membership messages

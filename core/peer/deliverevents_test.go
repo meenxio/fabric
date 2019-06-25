@@ -7,23 +7,24 @@ SPDX-License-Identifier: Apache-2.0
 package peer
 
 import (
+	"context"
 	"io"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/common/deliver"
 	"github.com/hyperledger/fabric/common/ledger/blockledger"
+	"github.com/hyperledger/fabric/common/metrics/disabled"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/orderer"
 	"github.com/hyperledger/fabric/protos/peer"
-	"github.com/hyperledger/fabric/protos/utils"
-	"github.com/spf13/viper"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc/metadata"
 	peer2 "google.golang.org/grpc/peer"
 )
@@ -31,7 +32,7 @@ import (
 // defaultPolicyCheckerProvider policy checker provider used by default,
 // generates policy checker which always accepts regardless of arguments
 // passed in
-var defaultPolicyCheckerProvider = func(_ string) deliver.PolicyChecker {
+var defaultPolicyCheckerProvider = func(_ string) deliver.PolicyCheckerFunc {
 	return func(_ *common.Envelope, _ string) error {
 		return nil
 	}
@@ -93,14 +94,14 @@ func (*mockChainSupport) Errored() <-chan struct{} {
 	return make(chan struct{})
 }
 
-// mockSupportManager mock implementation of the SupportManager interface
-type mockSupportManager struct {
+// mockChainManager mock implementation of the ChainManager interface
+type mockChainManager struct {
 	mock.Mock
 }
 
-func (m *mockSupportManager) GetChain(chainID string) (deliver.Support, bool) {
+func (m *mockChainManager) GetChain(chainID string) deliver.Chain {
 	args := m.Called(chainID)
-	return args.Get(0).(deliver.Support), args.Get(1).(bool)
+	return args.Get(0).(deliver.Chain)
 }
 
 // mockDeliverServer mock implementation of the Deliver_DeliverServer
@@ -156,28 +157,34 @@ type testConfig struct {
 
 type testCase struct {
 	name    string
-	prepare func(wg *sync.WaitGroup) (deliver.SupportManager, peer.Deliver_DeliverServer)
+	prepare func(wg *sync.WaitGroup) (deliver.ChainManager, peer.Deliver_DeliverServer)
+}
+
+func TestFilteredBlockResponseSenderIsFiltered(t *testing.T) {
+	var fbrs interface{} = &filteredBlockResponseSender{}
+	filtered, ok := fbrs.(deliver.Filtered)
+	assert.True(t, ok, "should be filtered")
+	assert.True(t, filtered.IsFiltered(), "should return true from IsFiltered")
 }
 
 func TestEventsServer_DeliverFiltered(t *testing.T) {
-	viper.Set("peer.authentication.timewindow", "1s")
 	tests := []testCase{
 		{
 			name: "Testing deliver of the filtered block events",
-			prepare: func(config testConfig) func(wg *sync.WaitGroup) (deliver.SupportManager, peer.Deliver_DeliverServer) {
-				return func(wg *sync.WaitGroup) (deliver.SupportManager, peer.Deliver_DeliverServer) {
+			prepare: func(config testConfig) func(wg *sync.WaitGroup) (deliver.ChainManager, peer.Deliver_DeliverServer) {
+				return func(wg *sync.WaitGroup) (deliver.ChainManager, peer.Deliver_DeliverServer) {
 					wg.Add(2)
 					p := &peer2.Peer{}
 					chaincodeActionPayload, err := createChaincodeAction(config.chaincodeName, config.eventName, config.txID)
 					config.NoError(err)
 
-					supportManager := createDefaultSupportMamangerMock(config, chaincodeActionPayload)
+					chainManager := createDefaultSupportMamangerMock(config, chaincodeActionPayload)
 					// setup mock deliver server
 					deliverServer := &mockDeliverServer{}
 					deliverServer.On("Context").Return(peer2.NewContext(context.TODO(), p))
 
 					deliverServer.On("Recv").Return(&common.Envelope{
-						Payload: utils.MarshalOrPanic(config.payload),
+						Payload: protoutil.MarshalOrPanic(config.payload),
 					}, nil).Run(func(_ mock.Arguments) {
 						// once we are getting new message we need to mock
 						// Recv call to get io.EOF to stop the looping for
@@ -214,7 +221,7 @@ func TestEventsServer_DeliverFiltered(t *testing.T) {
 						}).Return(nil)
 					})
 
-					return supportManager, deliverServer
+					return chainManager, deliverServer
 				}
 			}(testConfig{
 				channelID:     "testChainID",
@@ -223,13 +230,13 @@ func TestEventsServer_DeliverFiltered(t *testing.T) {
 				txID:          "testID",
 				payload: &common.Payload{
 					Header: &common.Header{
-						ChannelHeader: utils.MarshalOrPanic(&common.ChannelHeader{
+						ChannelHeader: protoutil.MarshalOrPanic(&common.ChannelHeader{
 							ChannelId: "testChainID",
 							Timestamp: util.CreateUtcTimestamp(),
 						}),
-						SignatureHeader: utils.MarshalOrPanic(&common.SignatureHeader{}),
+						SignatureHeader: protoutil.MarshalOrPanic(&common.SignatureHeader{}),
 					},
-					Data: utils.MarshalOrPanic(&orderer.SeekInfo{
+					Data: protoutil.MarshalOrPanic(&orderer.SeekInfo{
 						Start:    &orderer.SeekPosition{Type: &orderer.SeekPosition_Specified{Specified: &orderer.SeekSpecified{Number: 0}}},
 						Stop:     &orderer.SeekPosition{Type: &orderer.SeekPosition_Newest{Newest: &orderer.SeekNewest{}}},
 						Behavior: orderer.SeekInfo_BLOCK_UNTIL_READY,
@@ -240,18 +247,18 @@ func TestEventsServer_DeliverFiltered(t *testing.T) {
 		},
 		{
 			name: "Testing deliver of the filtered block events with nil chaincode action payload",
-			prepare: func(config testConfig) func(wg *sync.WaitGroup) (deliver.SupportManager, peer.Deliver_DeliverServer) {
-				return func(wg *sync.WaitGroup) (deliver.SupportManager, peer.Deliver_DeliverServer) {
+			prepare: func(config testConfig) func(wg *sync.WaitGroup) (deliver.ChainManager, peer.Deliver_DeliverServer) {
+				return func(wg *sync.WaitGroup) (deliver.ChainManager, peer.Deliver_DeliverServer) {
 					wg.Add(2)
 					p := &peer2.Peer{}
-					supportManager := createDefaultSupportMamangerMock(config, nil)
+					chainManager := createDefaultSupportMamangerMock(config, nil)
 
 					// setup mock deliver server
 					deliverServer := &mockDeliverServer{}
 					deliverServer.On("Context").Return(peer2.NewContext(context.TODO(), p))
 
 					deliverServer.On("Recv").Return(&common.Envelope{
-						Payload: utils.MarshalOrPanic(config.payload),
+						Payload: protoutil.MarshalOrPanic(config.payload),
 					}, nil).Run(func(_ mock.Arguments) {
 						// once we are getting new message we need to mock
 						// Recv call to get io.EOF to stop the looping for
@@ -287,7 +294,7 @@ func TestEventsServer_DeliverFiltered(t *testing.T) {
 						}).Return(nil)
 					})
 
-					return supportManager, deliverServer
+					return chainManager, deliverServer
 				}
 			}(testConfig{
 				channelID:     "testChainID",
@@ -296,13 +303,13 @@ func TestEventsServer_DeliverFiltered(t *testing.T) {
 				txID:          "testID",
 				payload: &common.Payload{
 					Header: &common.Header{
-						ChannelHeader: utils.MarshalOrPanic(&common.ChannelHeader{
+						ChannelHeader: protoutil.MarshalOrPanic(&common.ChannelHeader{
 							ChannelId: "testChainID",
 							Timestamp: util.CreateUtcTimestamp(),
 						}),
-						SignatureHeader: utils.MarshalOrPanic(&common.SignatureHeader{}),
+						SignatureHeader: protoutil.MarshalOrPanic(&common.SignatureHeader{}),
 					},
-					Data: utils.MarshalOrPanic(&orderer.SeekInfo{
+					Data: protoutil.MarshalOrPanic(&orderer.SeekInfo{
 						Start:    &orderer.SeekPosition{Type: &orderer.SeekPosition_Specified{Specified: &orderer.SeekSpecified{Number: 0}}},
 						Stop:     &orderer.SeekPosition{Type: &orderer.SeekPosition_Newest{Newest: &orderer.SeekNewest{}}},
 						Behavior: orderer.SeekInfo_BLOCK_UNTIL_READY,
@@ -313,18 +320,18 @@ func TestEventsServer_DeliverFiltered(t *testing.T) {
 		},
 		{
 			name: "Testing deliver of the filtered block events with nil payload header",
-			prepare: func(config testConfig) func(wg *sync.WaitGroup) (deliver.SupportManager, peer.Deliver_DeliverServer) {
-				return func(wg *sync.WaitGroup) (deliver.SupportManager, peer.Deliver_DeliverServer) {
+			prepare: func(config testConfig) func(wg *sync.WaitGroup) (deliver.ChainManager, peer.Deliver_DeliverServer) {
+				return func(wg *sync.WaitGroup) (deliver.ChainManager, peer.Deliver_DeliverServer) {
 					wg.Add(1)
 					p := &peer2.Peer{}
-					supportManager := createDefaultSupportMamangerMock(config, nil)
+					chainManager := createDefaultSupportMamangerMock(config, nil)
 
 					// setup mock deliver server
 					deliverServer := &mockDeliverServer{}
 					deliverServer.On("Context").Return(peer2.NewContext(context.TODO(), p))
 
 					deliverServer.On("Recv").Return(&common.Envelope{
-						Payload: utils.MarshalOrPanic(config.payload),
+						Payload: protoutil.MarshalOrPanic(config.payload),
 					}, nil).Run(func(_ mock.Arguments) {
 						// once we are getting new message we need to mock
 						// Recv call to get io.EOF to stop the looping for
@@ -347,7 +354,7 @@ func TestEventsServer_DeliverFiltered(t *testing.T) {
 						}).Return(nil)
 					})
 
-					return supportManager, deliverServer
+					return chainManager, deliverServer
 				}
 			}(testConfig{
 				channelID:     "testChainID",
@@ -356,7 +363,7 @@ func TestEventsServer_DeliverFiltered(t *testing.T) {
 				txID:          "testID",
 				payload: &common.Payload{
 					Header: nil,
-					Data: utils.MarshalOrPanic(&orderer.SeekInfo{
+					Data: protoutil.MarshalOrPanic(&orderer.SeekInfo{
 						Start:    &orderer.SeekPosition{Type: &orderer.SeekPosition_Specified{Specified: &orderer.SeekSpecified{Number: 0}}},
 						Stop:     &orderer.SeekPosition{Type: &orderer.SeekPosition_Newest{Newest: &orderer.SeekNewest{}}},
 						Behavior: orderer.SeekInfo_BLOCK_UNTIL_READY,
@@ -369,9 +376,14 @@ func TestEventsServer_DeliverFiltered(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			wg := &sync.WaitGroup{}
-			supportManager, deliverServer := test.prepare(wg)
+			chainManager, deliverServer := test.prepare(wg)
 
-			server := NewDeliverEventsServer(false, defaultPolicyCheckerProvider, supportManager)
+			metrics := deliver.NewMetrics(&disabled.Provider{})
+			server := &DeliverServer{
+				DeliverHandler:        deliver.NewHandler(chainManager, time.Second, false, metrics),
+				PolicyCheckerProvider: defaultPolicyCheckerProvider,
+			}
+
 			err := server.DeliverFiltered(deliverServer)
 			wg.Wait()
 			// no error expected
@@ -379,8 +391,8 @@ func TestEventsServer_DeliverFiltered(t *testing.T) {
 		})
 	}
 }
-func createDefaultSupportMamangerMock(config testConfig, chaincodeActionPayload *peer.ChaincodeActionPayload) *mockSupportManager {
-	supportManager := &mockSupportManager{}
+func createDefaultSupportMamangerMock(config testConfig, chaincodeActionPayload *peer.ChaincodeActionPayload) *mockChainManager {
+	chainManager := &mockChainManager{}
 	iter := &mockIterator{}
 	reader := &mockReader{}
 	chain := &mockChainSupport{}
@@ -401,9 +413,9 @@ func createDefaultSupportMamangerMock(config testConfig, chaincodeActionPayload 
 	reader.On("Height").Return(uint64(1))
 	chain.On("Sequence").Return(uint64(0))
 	chain.On("Reader").Return(reader)
-	supportManager.On("GetChain", config.channelID).Return(chain, true)
+	chainManager.On("GetChain", config.channelID).Return(chain, true)
 
-	return supportManager
+	return chainManager
 }
 
 func createEndorsement(channelID string, txID string, chaincodeActionPayload *peer.ChaincodeActionPayload) (*common.Payload, error) {

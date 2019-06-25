@@ -3,15 +3,23 @@
 
 package common
 
-import proto "github.com/golang/protobuf/proto"
-import fmt "fmt"
-import math "math"
-import common1 "github.com/hyperledger/fabric/protos/msp"
+import (
+	fmt "fmt"
+	proto "github.com/golang/protobuf/proto"
+	msp "github.com/hyperledger/fabric/protos/msp"
+	math "math"
+)
 
 // Reference imports to suppress errors if they are not otherwise used.
 var _ = proto.Marshal
 var _ = fmt.Errorf
 var _ = math.Inf
+
+// This is a compile-time assertion to ensure that this generated file
+// is compatible with the proto package it is being compiled against.
+// A compilation error at this line likely means your copy of the
+// proto package needs to be updated.
+const _ = proto.ProtoPackageIsVersion3 // please upgrade the proto package
 
 type Policy_PolicyType int32
 
@@ -28,6 +36,7 @@ var Policy_PolicyType_name = map[int32]string{
 	2: "MSP",
 	3: "IMPLICIT_META",
 }
+
 var Policy_PolicyType_value = map[string]int32{
 	"UNKNOWN":       0,
 	"SIGNATURE":     1,
@@ -38,7 +47,10 @@ var Policy_PolicyType_value = map[string]int32{
 func (x Policy_PolicyType) String() string {
 	return proto.EnumName(Policy_PolicyType_name, int32(x))
 }
-func (Policy_PolicyType) EnumDescriptor() ([]byte, []int) { return fileDescriptor5, []int{0, 0} }
+
+func (Policy_PolicyType) EnumDescriptor() ([]byte, []int) {
+	return fileDescriptor_0d02cf0d453425a3, []int{0, 0}
+}
 
 type ImplicitMetaPolicy_Rule int32
 
@@ -53,6 +65,7 @@ var ImplicitMetaPolicy_Rule_name = map[int32]string{
 	1: "ALL",
 	2: "MAJORITY",
 }
+
 var ImplicitMetaPolicy_Rule_value = map[string]int32{
 	"ANY":      0,
 	"ALL":      1,
@@ -62,19 +75,45 @@ var ImplicitMetaPolicy_Rule_value = map[string]int32{
 func (x ImplicitMetaPolicy_Rule) String() string {
 	return proto.EnumName(ImplicitMetaPolicy_Rule_name, int32(x))
 }
-func (ImplicitMetaPolicy_Rule) EnumDescriptor() ([]byte, []int) { return fileDescriptor5, []int{3, 0} }
+
+func (ImplicitMetaPolicy_Rule) EnumDescriptor() ([]byte, []int) {
+	return fileDescriptor_0d02cf0d453425a3, []int{3, 0}
+}
 
 // Policy expresses a policy which the orderer can evaluate, because there has been some desire expressed to support
 // multiple policy engines, this is typed as a oneof for now
 type Policy struct {
-	Type  int32  `protobuf:"varint,1,opt,name=type" json:"type,omitempty"`
-	Value []byte `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	Type                 int32    `protobuf:"varint,1,opt,name=type,proto3" json:"type,omitempty"`
+	Value                []byte   `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
 }
 
-func (m *Policy) Reset()                    { *m = Policy{} }
-func (m *Policy) String() string            { return proto.CompactTextString(m) }
-func (*Policy) ProtoMessage()               {}
-func (*Policy) Descriptor() ([]byte, []int) { return fileDescriptor5, []int{0} }
+func (m *Policy) Reset()         { *m = Policy{} }
+func (m *Policy) String() string { return proto.CompactTextString(m) }
+func (*Policy) ProtoMessage()    {}
+func (*Policy) Descriptor() ([]byte, []int) {
+	return fileDescriptor_0d02cf0d453425a3, []int{0}
+}
+
+func (m *Policy) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_Policy.Unmarshal(m, b)
+}
+func (m *Policy) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_Policy.Marshal(b, m, deterministic)
+}
+func (m *Policy) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_Policy.Merge(m, src)
+}
+func (m *Policy) XXX_Size() int {
+	return xxx_messageInfo_Policy.Size(m)
+}
+func (m *Policy) XXX_DiscardUnknown() {
+	xxx_messageInfo_Policy.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_Policy proto.InternalMessageInfo
 
 func (m *Policy) GetType() int32 {
 	if m != nil {
@@ -92,15 +131,38 @@ func (m *Policy) GetValue() []byte {
 
 // SignaturePolicyEnvelope wraps a SignaturePolicy and includes a version for future enhancements
 type SignaturePolicyEnvelope struct {
-	Version    int32                   `protobuf:"varint,1,opt,name=version" json:"version,omitempty"`
-	Rule       *SignaturePolicy        `protobuf:"bytes,2,opt,name=rule" json:"rule,omitempty"`
-	Identities []*common1.MSPPrincipal `protobuf:"bytes,3,rep,name=identities" json:"identities,omitempty"`
+	Version              int32               `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	Rule                 *SignaturePolicy    `protobuf:"bytes,2,opt,name=rule,proto3" json:"rule,omitempty"`
+	Identities           []*msp.MSPPrincipal `protobuf:"bytes,3,rep,name=identities,proto3" json:"identities,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}            `json:"-"`
+	XXX_unrecognized     []byte              `json:"-"`
+	XXX_sizecache        int32               `json:"-"`
 }
 
-func (m *SignaturePolicyEnvelope) Reset()                    { *m = SignaturePolicyEnvelope{} }
-func (m *SignaturePolicyEnvelope) String() string            { return proto.CompactTextString(m) }
-func (*SignaturePolicyEnvelope) ProtoMessage()               {}
-func (*SignaturePolicyEnvelope) Descriptor() ([]byte, []int) { return fileDescriptor5, []int{1} }
+func (m *SignaturePolicyEnvelope) Reset()         { *m = SignaturePolicyEnvelope{} }
+func (m *SignaturePolicyEnvelope) String() string { return proto.CompactTextString(m) }
+func (*SignaturePolicyEnvelope) ProtoMessage()    {}
+func (*SignaturePolicyEnvelope) Descriptor() ([]byte, []int) {
+	return fileDescriptor_0d02cf0d453425a3, []int{1}
+}
+
+func (m *SignaturePolicyEnvelope) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_SignaturePolicyEnvelope.Unmarshal(m, b)
+}
+func (m *SignaturePolicyEnvelope) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_SignaturePolicyEnvelope.Marshal(b, m, deterministic)
+}
+func (m *SignaturePolicyEnvelope) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_SignaturePolicyEnvelope.Merge(m, src)
+}
+func (m *SignaturePolicyEnvelope) XXX_Size() int {
+	return xxx_messageInfo_SignaturePolicyEnvelope.Size(m)
+}
+func (m *SignaturePolicyEnvelope) XXX_DiscardUnknown() {
+	xxx_messageInfo_SignaturePolicyEnvelope.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_SignaturePolicyEnvelope proto.InternalMessageInfo
 
 func (m *SignaturePolicyEnvelope) GetVersion() int32 {
 	if m != nil {
@@ -116,7 +178,7 @@ func (m *SignaturePolicyEnvelope) GetRule() *SignaturePolicy {
 	return nil
 }
 
-func (m *SignaturePolicyEnvelope) GetIdentities() []*common1.MSPPrincipal {
+func (m *SignaturePolicyEnvelope) GetIdentities() []*msp.MSPPrincipal {
 	if m != nil {
 		return m.Identities
 	}
@@ -133,27 +195,52 @@ type SignaturePolicy struct {
 	// Types that are valid to be assigned to Type:
 	//	*SignaturePolicy_SignedBy
 	//	*SignaturePolicy_NOutOf_
-	Type isSignaturePolicy_Type `protobuf_oneof:"Type"`
+	Type                 isSignaturePolicy_Type `protobuf_oneof:"Type"`
+	XXX_NoUnkeyedLiteral struct{}               `json:"-"`
+	XXX_unrecognized     []byte                 `json:"-"`
+	XXX_sizecache        int32                  `json:"-"`
 }
 
-func (m *SignaturePolicy) Reset()                    { *m = SignaturePolicy{} }
-func (m *SignaturePolicy) String() string            { return proto.CompactTextString(m) }
-func (*SignaturePolicy) ProtoMessage()               {}
-func (*SignaturePolicy) Descriptor() ([]byte, []int) { return fileDescriptor5, []int{2} }
+func (m *SignaturePolicy) Reset()         { *m = SignaturePolicy{} }
+func (m *SignaturePolicy) String() string { return proto.CompactTextString(m) }
+func (*SignaturePolicy) ProtoMessage()    {}
+func (*SignaturePolicy) Descriptor() ([]byte, []int) {
+	return fileDescriptor_0d02cf0d453425a3, []int{2}
+}
+
+func (m *SignaturePolicy) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_SignaturePolicy.Unmarshal(m, b)
+}
+func (m *SignaturePolicy) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_SignaturePolicy.Marshal(b, m, deterministic)
+}
+func (m *SignaturePolicy) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_SignaturePolicy.Merge(m, src)
+}
+func (m *SignaturePolicy) XXX_Size() int {
+	return xxx_messageInfo_SignaturePolicy.Size(m)
+}
+func (m *SignaturePolicy) XXX_DiscardUnknown() {
+	xxx_messageInfo_SignaturePolicy.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_SignaturePolicy proto.InternalMessageInfo
 
 type isSignaturePolicy_Type interface {
 	isSignaturePolicy_Type()
 }
 
 type SignaturePolicy_SignedBy struct {
-	SignedBy int32 `protobuf:"varint,1,opt,name=signed_by,json=signedBy,oneof"`
+	SignedBy int32 `protobuf:"varint,1,opt,name=signed_by,json=signedBy,proto3,oneof"`
 }
+
 type SignaturePolicy_NOutOf_ struct {
-	NOutOf *SignaturePolicy_NOutOf `protobuf:"bytes,2,opt,name=n_out_of,json=nOutOf,oneof"`
+	NOutOf *SignaturePolicy_NOutOf `protobuf:"bytes,2,opt,name=n_out_of,json=nOutOf,proto3,oneof"`
 }
 
 func (*SignaturePolicy_SignedBy) isSignaturePolicy_Type() {}
-func (*SignaturePolicy_NOutOf_) isSignaturePolicy_Type()  {}
+
+func (*SignaturePolicy_NOutOf_) isSignaturePolicy_Type() {}
 
 func (m *SignaturePolicy) GetType() isSignaturePolicy_Type {
 	if m != nil {
@@ -176,84 +263,46 @@ func (m *SignaturePolicy) GetNOutOf() *SignaturePolicy_NOutOf {
 	return nil
 }
 
-// XXX_OneofFuncs is for the internal use of the proto package.
-func (*SignaturePolicy) XXX_OneofFuncs() (func(msg proto.Message, b *proto.Buffer) error, func(msg proto.Message, tag, wire int, b *proto.Buffer) (bool, error), func(msg proto.Message) (n int), []interface{}) {
-	return _SignaturePolicy_OneofMarshaler, _SignaturePolicy_OneofUnmarshaler, _SignaturePolicy_OneofSizer, []interface{}{
+// XXX_OneofWrappers is for the internal use of the proto package.
+func (*SignaturePolicy) XXX_OneofWrappers() []interface{} {
+	return []interface{}{
 		(*SignaturePolicy_SignedBy)(nil),
 		(*SignaturePolicy_NOutOf_)(nil),
 	}
 }
 
-func _SignaturePolicy_OneofMarshaler(msg proto.Message, b *proto.Buffer) error {
-	m := msg.(*SignaturePolicy)
-	// Type
-	switch x := m.Type.(type) {
-	case *SignaturePolicy_SignedBy:
-		b.EncodeVarint(1<<3 | proto.WireVarint)
-		b.EncodeVarint(uint64(x.SignedBy))
-	case *SignaturePolicy_NOutOf_:
-		b.EncodeVarint(2<<3 | proto.WireBytes)
-		if err := b.EncodeMessage(x.NOutOf); err != nil {
-			return err
-		}
-	case nil:
-	default:
-		return fmt.Errorf("SignaturePolicy.Type has unexpected type %T", x)
-	}
-	return nil
-}
-
-func _SignaturePolicy_OneofUnmarshaler(msg proto.Message, tag, wire int, b *proto.Buffer) (bool, error) {
-	m := msg.(*SignaturePolicy)
-	switch tag {
-	case 1: // Type.signed_by
-		if wire != proto.WireVarint {
-			return true, proto.ErrInternalBadWireType
-		}
-		x, err := b.DecodeVarint()
-		m.Type = &SignaturePolicy_SignedBy{int32(x)}
-		return true, err
-	case 2: // Type.n_out_of
-		if wire != proto.WireBytes {
-			return true, proto.ErrInternalBadWireType
-		}
-		msg := new(SignaturePolicy_NOutOf)
-		err := b.DecodeMessage(msg)
-		m.Type = &SignaturePolicy_NOutOf_{msg}
-		return true, err
-	default:
-		return false, nil
-	}
-}
-
-func _SignaturePolicy_OneofSizer(msg proto.Message) (n int) {
-	m := msg.(*SignaturePolicy)
-	// Type
-	switch x := m.Type.(type) {
-	case *SignaturePolicy_SignedBy:
-		n += proto.SizeVarint(1<<3 | proto.WireVarint)
-		n += proto.SizeVarint(uint64(x.SignedBy))
-	case *SignaturePolicy_NOutOf_:
-		s := proto.Size(x.NOutOf)
-		n += proto.SizeVarint(2<<3 | proto.WireBytes)
-		n += proto.SizeVarint(uint64(s))
-		n += s
-	case nil:
-	default:
-		panic(fmt.Sprintf("proto: unexpected type %T in oneof", x))
-	}
-	return n
-}
-
 type SignaturePolicy_NOutOf struct {
-	N     int32              `protobuf:"varint,1,opt,name=n" json:"n,omitempty"`
-	Rules []*SignaturePolicy `protobuf:"bytes,2,rep,name=rules" json:"rules,omitempty"`
+	N                    int32              `protobuf:"varint,1,opt,name=n,proto3" json:"n,omitempty"`
+	Rules                []*SignaturePolicy `protobuf:"bytes,2,rep,name=rules,proto3" json:"rules,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}           `json:"-"`
+	XXX_unrecognized     []byte             `json:"-"`
+	XXX_sizecache        int32              `json:"-"`
 }
 
-func (m *SignaturePolicy_NOutOf) Reset()                    { *m = SignaturePolicy_NOutOf{} }
-func (m *SignaturePolicy_NOutOf) String() string            { return proto.CompactTextString(m) }
-func (*SignaturePolicy_NOutOf) ProtoMessage()               {}
-func (*SignaturePolicy_NOutOf) Descriptor() ([]byte, []int) { return fileDescriptor5, []int{2, 0} }
+func (m *SignaturePolicy_NOutOf) Reset()         { *m = SignaturePolicy_NOutOf{} }
+func (m *SignaturePolicy_NOutOf) String() string { return proto.CompactTextString(m) }
+func (*SignaturePolicy_NOutOf) ProtoMessage()    {}
+func (*SignaturePolicy_NOutOf) Descriptor() ([]byte, []int) {
+	return fileDescriptor_0d02cf0d453425a3, []int{2, 0}
+}
+
+func (m *SignaturePolicy_NOutOf) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_SignaturePolicy_NOutOf.Unmarshal(m, b)
+}
+func (m *SignaturePolicy_NOutOf) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_SignaturePolicy_NOutOf.Marshal(b, m, deterministic)
+}
+func (m *SignaturePolicy_NOutOf) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_SignaturePolicy_NOutOf.Merge(m, src)
+}
+func (m *SignaturePolicy_NOutOf) XXX_Size() int {
+	return xxx_messageInfo_SignaturePolicy_NOutOf.Size(m)
+}
+func (m *SignaturePolicy_NOutOf) XXX_DiscardUnknown() {
+	xxx_messageInfo_SignaturePolicy_NOutOf.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_SignaturePolicy_NOutOf proto.InternalMessageInfo
 
 func (m *SignaturePolicy_NOutOf) GetN() int32 {
 	if m != nil {
@@ -278,14 +327,37 @@ func (m *SignaturePolicy_NOutOf) GetRules() []*SignaturePolicy {
 // each sub-group, retrieves policy "foo" for each subgroup, evaluates it, and, in the case of ANY
 // 1 satisfied is sufficient, ALL would require 4 signatures, and MAJORITY would require 3 signatures.
 type ImplicitMetaPolicy struct {
-	SubPolicy string                  `protobuf:"bytes,1,opt,name=sub_policy,json=subPolicy" json:"sub_policy,omitempty"`
-	Rule      ImplicitMetaPolicy_Rule `protobuf:"varint,2,opt,name=rule,enum=common.ImplicitMetaPolicy_Rule" json:"rule,omitempty"`
+	SubPolicy            string                  `protobuf:"bytes,1,opt,name=sub_policy,json=subPolicy,proto3" json:"sub_policy,omitempty"`
+	Rule                 ImplicitMetaPolicy_Rule `protobuf:"varint,2,opt,name=rule,proto3,enum=common.ImplicitMetaPolicy_Rule" json:"rule,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}                `json:"-"`
+	XXX_unrecognized     []byte                  `json:"-"`
+	XXX_sizecache        int32                   `json:"-"`
 }
 
-func (m *ImplicitMetaPolicy) Reset()                    { *m = ImplicitMetaPolicy{} }
-func (m *ImplicitMetaPolicy) String() string            { return proto.CompactTextString(m) }
-func (*ImplicitMetaPolicy) ProtoMessage()               {}
-func (*ImplicitMetaPolicy) Descriptor() ([]byte, []int) { return fileDescriptor5, []int{3} }
+func (m *ImplicitMetaPolicy) Reset()         { *m = ImplicitMetaPolicy{} }
+func (m *ImplicitMetaPolicy) String() string { return proto.CompactTextString(m) }
+func (*ImplicitMetaPolicy) ProtoMessage()    {}
+func (*ImplicitMetaPolicy) Descriptor() ([]byte, []int) {
+	return fileDescriptor_0d02cf0d453425a3, []int{3}
+}
+
+func (m *ImplicitMetaPolicy) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_ImplicitMetaPolicy.Unmarshal(m, b)
+}
+func (m *ImplicitMetaPolicy) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_ImplicitMetaPolicy.Marshal(b, m, deterministic)
+}
+func (m *ImplicitMetaPolicy) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_ImplicitMetaPolicy.Merge(m, src)
+}
+func (m *ImplicitMetaPolicy) XXX_Size() int {
+	return xxx_messageInfo_ImplicitMetaPolicy.Size(m)
+}
+func (m *ImplicitMetaPolicy) XXX_DiscardUnknown() {
+	xxx_messageInfo_ImplicitMetaPolicy.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_ImplicitMetaPolicy proto.InternalMessageInfo
 
 func (m *ImplicitMetaPolicy) GetSubPolicy() string {
 	if m != nil {
@@ -302,18 +374,18 @@ func (m *ImplicitMetaPolicy) GetRule() ImplicitMetaPolicy_Rule {
 }
 
 func init() {
+	proto.RegisterEnum("common.Policy_PolicyType", Policy_PolicyType_name, Policy_PolicyType_value)
+	proto.RegisterEnum("common.ImplicitMetaPolicy_Rule", ImplicitMetaPolicy_Rule_name, ImplicitMetaPolicy_Rule_value)
 	proto.RegisterType((*Policy)(nil), "common.Policy")
 	proto.RegisterType((*SignaturePolicyEnvelope)(nil), "common.SignaturePolicyEnvelope")
 	proto.RegisterType((*SignaturePolicy)(nil), "common.SignaturePolicy")
 	proto.RegisterType((*SignaturePolicy_NOutOf)(nil), "common.SignaturePolicy.NOutOf")
 	proto.RegisterType((*ImplicitMetaPolicy)(nil), "common.ImplicitMetaPolicy")
-	proto.RegisterEnum("common.Policy_PolicyType", Policy_PolicyType_name, Policy_PolicyType_value)
-	proto.RegisterEnum("common.ImplicitMetaPolicy_Rule", ImplicitMetaPolicy_Rule_name, ImplicitMetaPolicy_Rule_value)
 }
 
-func init() { proto.RegisterFile("common/policies.proto", fileDescriptor5) }
+func init() { proto.RegisterFile("common/policies.proto", fileDescriptor_0d02cf0d453425a3) }
 
-var fileDescriptor5 = []byte{
+var fileDescriptor_0d02cf0d453425a3 = []byte{
 	// 480 bytes of a gzipped FileDescriptorProto
 	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x74, 0x52, 0xdf, 0x8b, 0xda, 0x40,
 	0x10, 0x76, 0xfd, 0x11, 0x75, 0xf4, 0xda, 0x74, 0xb9, 0xa2, 0x1c, 0xb4, 0x95, 0x50, 0x8a, 0x70,

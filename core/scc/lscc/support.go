@@ -9,22 +9,21 @@ package lscc
 import (
 	"github.com/hyperledger/fabric/common/cauthdsl"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
-	"github.com/hyperledger/fabric/core/peer"
 	"github.com/hyperledger/fabric/msp/mgmt"
-	"github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 )
 
 type supportImpl struct {
+	GetMSPIDs MSPIDsGetter
 }
 
 // PutChaincodeToLocalStorage stores the supplied chaincode
 // package to local storage (i.e. the file system)
 func (s *supportImpl) PutChaincodeToLocalStorage(ccpack ccprovider.CCPackage) error {
 	if err := ccpack.PutChaincodeToFS(); err != nil {
-		return errors.Errorf("Error installing chaincode code %s:%s(%s)", ccpack.GetChaincodeData().CCName(), ccpack.GetChaincodeData().CCVersion(), err)
+		return errors.Errorf("error installing chaincode code %s:%s(%s)", ccpack.GetChaincodeData().CCName(), ccpack.GetChaincodeData().CCVersion(), err)
 	}
 
 	return nil
@@ -52,17 +51,17 @@ func (s *supportImpl) GetInstantiationPolicy(channel string, ccpack ccprovider.C
 	if isSccpack {
 		ip = sccpack.GetInstantiationPolicy()
 		if ip == nil {
-			return nil, errors.Errorf("Instantiation policy cannot be null for a SignedCCDeploymentSpec")
+			return nil, errors.Errorf("instantiation policy cannot be nil for a SignedCCDeploymentSpec")
 		}
 	} else {
 		// the default instantiation policy allows any of the channel MSP admins
 		// to be able to instantiate
-		mspids := peer.GetMSPIDs(channel)
+		mspids := s.GetMSPIDs(channel)
 
 		p := cauthdsl.SignedByAnyAdmin(mspids)
-		ip, err = utils.Marshal(p)
+		ip, err = protoutil.Marshal(p)
 		if err != nil {
-			return nil, errors.Errorf("Error marshalling default instantiation policy")
+			return nil, errors.Errorf("error marshalling default instantiation policy")
 		}
 
 	}
@@ -75,28 +74,28 @@ func (s *supportImpl) CheckInstantiationPolicy(signedProp *pb.SignedProposal, ch
 	// create a policy object from the policy bytes
 	mgr := mgmt.GetManagerForChain(chainName)
 	if mgr == nil {
-		return errors.Errorf("Error checking chaincode instantiation policy: MSP manager for chain %s not found", chainName)
+		return errors.Errorf("error checking chaincode instantiation policy: MSP manager for channel %s not found", chainName)
 	}
 	npp := cauthdsl.NewPolicyProvider(mgr)
 	instPol, _, err := npp.NewPolicy(instantiationPolicy)
 	if err != nil {
 		return err
 	}
-	proposal, err := utils.GetProposal(signedProp.ProposalBytes)
+	proposal, err := protoutil.GetProposal(signedProp.ProposalBytes)
 	if err != nil {
 		return err
 	}
 	// get the signature header of the proposal
-	header, err := utils.GetHeader(proposal.Header)
+	header, err := protoutil.GetHeader(proposal.Header)
 	if err != nil {
 		return err
 	}
-	shdr, err := utils.GetSignatureHeader(header.SignatureHeader)
+	shdr, err := protoutil.GetSignatureHeader(header.SignatureHeader)
 	if err != nil {
 		return err
 	}
 	// construct signed data we can evaluate the instantiation policy against
-	sd := []*common.SignedData{{
+	sd := []*protoutil.SignedData{{
 		Data:      signedProp.ProposalBytes,
 		Identity:  shdr.Creator,
 		Signature: signedProp.Signature,

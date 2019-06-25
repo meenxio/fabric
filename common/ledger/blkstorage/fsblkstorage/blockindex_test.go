@@ -1,17 +1,7 @@
 /*
 Copyright IBM Corp. 2016 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package fsblkstorage
@@ -22,10 +12,12 @@ import (
 
 	"github.com/hyperledger/fabric/common/ledger/blkstorage"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
+	"github.com/hyperledger/fabric/common/metrics/disabled"
 	"github.com/hyperledger/fabric/core/ledger/util"
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/peer"
-	putil "github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
+	"github.com/stretchr/testify/assert"
 )
 
 type noopIndex struct {
@@ -89,14 +81,14 @@ func testBlockIndexSync(t *testing.T, numBlocks int, numBlocksToIndex int, syncB
 		// The first set of blocks should be present in the original index
 		for i := 0; i < numBlocksToIndex; i++ {
 			block, err := blkfileMgr.retrieveBlockByNumber(uint64(i))
-			testutil.AssertNoError(t, err, fmt.Sprintf("block [%d] should have been present in the index", i))
-			testutil.AssertEquals(t, block, blocks[i])
+			assert.NoError(t, err, "block [%d] should have been present in the index", i)
+			assert.Equal(t, blocks[i], block)
 		}
 
 		// The last set of blocks should not be present in the original index
 		for i := numBlocksToIndex + 1; i <= numBlocks; i++ {
 			_, err := blkfileMgr.retrieveBlockByNumber(uint64(i))
-			testutil.AssertSame(t, err, blkstorage.ErrNotFoundInIndex)
+			assert.Exactly(t, blkstorage.ErrNotFoundInIndex, err)
 		}
 
 		// perform index sync
@@ -112,9 +104,32 @@ func testBlockIndexSync(t *testing.T, numBlocks int, numBlocksToIndex int, syncB
 		// Now, last set of blocks should also be present in original index
 		for i := numBlocksToIndex; i < numBlocks; i++ {
 			block, err := blkfileMgr.retrieveBlockByNumber(uint64(i))
-			testutil.AssertNoError(t, err, fmt.Sprintf("block [%d] should have been present in the index", i))
-			testutil.AssertEquals(t, block, blocks[i])
+			assert.NoError(t, err, "block [%d] should have been present in the index", i)
+			assert.Equal(t, blocks[i], block)
 		}
+	})
+}
+
+func TestBlockIndexSelectiveIndexingWrongConfig(t *testing.T) {
+	testBlockIndexSelectiveIndexingWrongConfig(t, []blkstorage.IndexableAttr{blkstorage.IndexableAttrBlockTxID})
+	testBlockIndexSelectiveIndexingWrongConfig(t, []blkstorage.IndexableAttr{blkstorage.IndexableAttrTxValidationCode})
+	testBlockIndexSelectiveIndexingWrongConfig(t, []blkstorage.IndexableAttr{blkstorage.IndexableAttrBlockTxID, blkstorage.IndexableAttrBlockNum})
+	testBlockIndexSelectiveIndexingWrongConfig(t, []blkstorage.IndexableAttr{blkstorage.IndexableAttrTxValidationCode, blkstorage.IndexableAttrBlockNumTranNum})
+
+}
+
+func testBlockIndexSelectiveIndexingWrongConfig(t *testing.T, indexItems []blkstorage.IndexableAttr) {
+	var testName string
+	for _, s := range indexItems {
+		testName = testName + string(s)
+	}
+	t.Run(testName, func(t *testing.T) {
+		env := newTestEnvSelectiveIndexing(t, NewConf(testPath(), 0), indexItems, &disabled.Provider{})
+		defer env.Cleanup()
+
+		assert.Panics(t, func() {
+			env.provider.OpenBlockStore("test-ledger")
+		}, "A panic is expected when index is opened with wrong configs")
 	})
 }
 
@@ -126,8 +141,8 @@ func TestBlockIndexSelectiveIndexing(t *testing.T) {
 	testBlockIndexSelectiveIndexing(t, []blkstorage.IndexableAttr{blkstorage.IndexableAttrBlockNumTranNum})
 	testBlockIndexSelectiveIndexing(t, []blkstorage.IndexableAttr{blkstorage.IndexableAttrBlockHash, blkstorage.IndexableAttrBlockNum})
 	testBlockIndexSelectiveIndexing(t, []blkstorage.IndexableAttr{blkstorage.IndexableAttrTxID, blkstorage.IndexableAttrBlockNumTranNum})
-	testBlockIndexSelectiveIndexing(t, []blkstorage.IndexableAttr{blkstorage.IndexableAttrBlockTxID})
-	testBlockIndexSelectiveIndexing(t, []blkstorage.IndexableAttr{blkstorage.IndexableAttrTxValidationCode})
+	testBlockIndexSelectiveIndexing(t, []blkstorage.IndexableAttr{blkstorage.IndexableAttrTxID, blkstorage.IndexableAttrBlockTxID})
+	testBlockIndexSelectiveIndexing(t, []blkstorage.IndexableAttr{blkstorage.IndexableAttrTxID, blkstorage.IndexableAttrTxValidationCode})
 }
 
 func testBlockIndexSelectiveIndexing(t *testing.T, indexItems []blkstorage.IndexableAttr) {
@@ -136,7 +151,7 @@ func testBlockIndexSelectiveIndexing(t *testing.T, indexItems []blkstorage.Index
 		testName = testName + string(s)
 	}
 	t.Run(testName, func(t *testing.T) {
-		env := newTestEnvSelectiveIndexing(t, NewConf(testPath(), 0), indexItems)
+		env := newTestEnvSelectiveIndexing(t, NewConf(testPath(), 0), indexItems, &disabled.Provider{})
 		defer env.Cleanup()
 		blkfileMgrWrapper := newTestBlockfileWrapper(env, "testledger")
 		defer blkfileMgrWrapper.close()
@@ -148,58 +163,58 @@ func testBlockIndexSelectiveIndexing(t *testing.T, indexItems []blkstorage.Index
 
 		// if index has been configured for an indexItem then the item should be indexed else not
 		// test 'retrieveBlockByHash'
-		block, err := blockfileMgr.retrieveBlockByHash(blocks[0].Header.Hash())
-		if testutil.Contains(indexItems, blkstorage.IndexableAttrBlockHash) {
-			testutil.AssertNoError(t, err, "Error while retrieving block by hash")
-			testutil.AssertEquals(t, block, blocks[0])
+		block, err := blockfileMgr.retrieveBlockByHash(protoutil.BlockHeaderHash(blocks[0].Header))
+		if containsAttr(indexItems, blkstorage.IndexableAttrBlockHash) {
+			assert.NoError(t, err, "Error while retrieving block by hash")
+			assert.Equal(t, blocks[0], block)
 		} else {
-			testutil.AssertSame(t, err, blkstorage.ErrAttrNotIndexed)
+			assert.Exactly(t, blkstorage.ErrAttrNotIndexed, err)
 		}
 
 		// test 'retrieveBlockByNumber'
 		block, err = blockfileMgr.retrieveBlockByNumber(0)
-		if testutil.Contains(indexItems, blkstorage.IndexableAttrBlockNum) {
-			testutil.AssertNoError(t, err, "Error while retrieving block by number")
-			testutil.AssertEquals(t, block, blocks[0])
+		if containsAttr(indexItems, blkstorage.IndexableAttrBlockNum) {
+			assert.NoError(t, err, "Error while retrieving block by number")
+			assert.Equal(t, blocks[0], block)
 		} else {
-			testutil.AssertSame(t, err, blkstorage.ErrAttrNotIndexed)
+			assert.Exactly(t, blkstorage.ErrAttrNotIndexed, err)
 		}
 
 		// test 'retrieveTransactionByID'
 		txid, err := extractTxID(blocks[0].Data.Data[0])
-		testutil.AssertNoError(t, err, "")
+		assert.NoError(t, err)
 		txEnvelope, err := blockfileMgr.retrieveTransactionByID(txid)
-		if testutil.Contains(indexItems, blkstorage.IndexableAttrTxID) {
-			testutil.AssertNoError(t, err, "Error while retrieving tx by id")
+		if containsAttr(indexItems, blkstorage.IndexableAttrTxID) {
+			assert.NoError(t, err, "Error while retrieving tx by id")
 			txEnvelopeBytes := blocks[0].Data.Data[0]
-			txEnvelopeOrig, err := putil.GetEnvelopeFromBlock(txEnvelopeBytes)
-			testutil.AssertNoError(t, err, "")
-			testutil.AssertEquals(t, txEnvelope, txEnvelopeOrig)
+			txEnvelopeOrig, err := protoutil.GetEnvelopeFromBlock(txEnvelopeBytes)
+			assert.NoError(t, err)
+			assert.Equal(t, txEnvelopeOrig, txEnvelope)
 		} else {
-			testutil.AssertSame(t, err, blkstorage.ErrAttrNotIndexed)
+			assert.Exactly(t, blkstorage.ErrAttrNotIndexed, err)
 		}
 
 		//test 'retrieveTrasnactionsByBlockNumTranNum
 		txEnvelope2, err := blockfileMgr.retrieveTransactionByBlockNumTranNum(0, 0)
-		if testutil.Contains(indexItems, blkstorage.IndexableAttrBlockNumTranNum) {
-			testutil.AssertNoError(t, err, "Error while retrieving tx by blockNum and tranNum")
+		if containsAttr(indexItems, blkstorage.IndexableAttrBlockNumTranNum) {
+			assert.NoError(t, err, "Error while retrieving tx by blockNum and tranNum")
 			txEnvelopeBytes2 := blocks[0].Data.Data[0]
-			txEnvelopeOrig2, err2 := putil.GetEnvelopeFromBlock(txEnvelopeBytes2)
-			testutil.AssertNoError(t, err2, "")
-			testutil.AssertEquals(t, txEnvelope2, txEnvelopeOrig2)
+			txEnvelopeOrig2, err2 := protoutil.GetEnvelopeFromBlock(txEnvelopeBytes2)
+			assert.NoError(t, err2)
+			assert.Equal(t, txEnvelopeOrig2, txEnvelope2)
 		} else {
-			testutil.AssertSame(t, err, blkstorage.ErrAttrNotIndexed)
+			assert.Exactly(t, blkstorage.ErrAttrNotIndexed, err)
 		}
 
 		// test 'retrieveBlockByTxID'
 		txid, err = extractTxID(blocks[0].Data.Data[0])
-		testutil.AssertNoError(t, err, "")
+		assert.NoError(t, err)
 		block, err = blockfileMgr.retrieveBlockByTxID(txid)
-		if testutil.Contains(indexItems, blkstorage.IndexableAttrBlockTxID) {
-			testutil.AssertNoError(t, err, "Error while retrieving block by txID")
-			testutil.AssertEquals(t, blocks[0], block)
+		if containsAttr(indexItems, blkstorage.IndexableAttrBlockTxID) {
+			assert.NoError(t, err, "Error while retrieving block by txID")
+			assert.Equal(t, block, blocks[0])
 		} else {
-			testutil.AssertSame(t, err, blkstorage.ErrAttrNotIndexed)
+			assert.Exactly(t, blkstorage.ErrAttrNotIndexed, err)
 		}
 
 		for _, block := range blocks {
@@ -207,20 +222,29 @@ func testBlockIndexSelectiveIndexing(t *testing.T, indexItems []blkstorage.Index
 
 			for idx, d := range block.Data.Data {
 				txid, err = extractTxID(d)
-				testutil.AssertNoError(t, err, "")
+				assert.NoError(t, err)
 
 				reason, err := blockfileMgr.retrieveTxValidationCodeByTxID(txid)
 
-				if testutil.Contains(indexItems, blkstorage.IndexableAttrTxValidationCode) {
-					testutil.AssertNoError(t, err, "Error while retrieving tx validation code by txID")
+				if containsAttr(indexItems, blkstorage.IndexableAttrTxValidationCode) {
+					assert.NoError(t, err, "Error while retrieving tx validation code by txID")
 
 					reasonFromFlags := flags.Flag(idx)
 
-					testutil.AssertEquals(t, reason, reasonFromFlags)
+					assert.Equal(t, reasonFromFlags, reason)
 				} else {
-					testutil.AssertSame(t, err, blkstorage.ErrAttrNotIndexed)
+					assert.Exactly(t, blkstorage.ErrAttrNotIndexed, err)
 				}
 			}
 		}
 	})
+}
+
+func containsAttr(indexItems []blkstorage.IndexableAttr, attr blkstorage.IndexableAttr) bool {
+	for _, element := range indexItems {
+		if element == attr {
+			return true
+		}
+	}
+	return false
 }

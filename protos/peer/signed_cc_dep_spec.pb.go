@@ -3,14 +3,22 @@
 
 package peer
 
-import proto "github.com/golang/protobuf/proto"
-import fmt "fmt"
-import math "math"
+import (
+	fmt "fmt"
+	proto "github.com/golang/protobuf/proto"
+	math "math"
+)
 
 // Reference imports to suppress errors if they are not otherwise used.
 var _ = proto.Marshal
 var _ = fmt.Errorf
 var _ = math.Inf
+
+// This is a compile-time assertion to ensure that this generated file
+// is compatible with the proto package it is being compiled against.
+// A compilation error at this line likely means your copy of the
+// proto package needs to be updated.
+const _ = proto.ProtoPackageIsVersion3 // please upgrade the proto package
 
 // SignedChaincodeDeploymentSpec carries the CDS along with endorsements
 type SignedChaincodeDeploymentSpec struct {
@@ -24,13 +32,36 @@ type SignedChaincodeDeploymentSpec struct {
 	InstantiationPolicy []byte `protobuf:"bytes,2,opt,name=instantiation_policy,json=instantiationPolicy,proto3" json:"instantiation_policy,omitempty"`
 	// The endorsements of the above deployment spec, the owner's signature over
 	// chaincode_deployment_spec and Endorsement.endorser.
-	OwnerEndorsements []*Endorsement `protobuf:"bytes,3,rep,name=owner_endorsements,json=ownerEndorsements" json:"owner_endorsements,omitempty"`
+	OwnerEndorsements    []*Endorsement `protobuf:"bytes,3,rep,name=owner_endorsements,json=ownerEndorsements,proto3" json:"owner_endorsements,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}       `json:"-"`
+	XXX_unrecognized     []byte         `json:"-"`
+	XXX_sizecache        int32          `json:"-"`
 }
 
-func (m *SignedChaincodeDeploymentSpec) Reset()                    { *m = SignedChaincodeDeploymentSpec{} }
-func (m *SignedChaincodeDeploymentSpec) String() string            { return proto.CompactTextString(m) }
-func (*SignedChaincodeDeploymentSpec) ProtoMessage()               {}
-func (*SignedChaincodeDeploymentSpec) Descriptor() ([]byte, []int) { return fileDescriptor11, []int{0} }
+func (m *SignedChaincodeDeploymentSpec) Reset()         { *m = SignedChaincodeDeploymentSpec{} }
+func (m *SignedChaincodeDeploymentSpec) String() string { return proto.CompactTextString(m) }
+func (*SignedChaincodeDeploymentSpec) ProtoMessage()    {}
+func (*SignedChaincodeDeploymentSpec) Descriptor() ([]byte, []int) {
+	return fileDescriptor_e007a7c0644e7e6f, []int{0}
+}
+
+func (m *SignedChaincodeDeploymentSpec) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_SignedChaincodeDeploymentSpec.Unmarshal(m, b)
+}
+func (m *SignedChaincodeDeploymentSpec) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_SignedChaincodeDeploymentSpec.Marshal(b, m, deterministic)
+}
+func (m *SignedChaincodeDeploymentSpec) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_SignedChaincodeDeploymentSpec.Merge(m, src)
+}
+func (m *SignedChaincodeDeploymentSpec) XXX_Size() int {
+	return xxx_messageInfo_SignedChaincodeDeploymentSpec.Size(m)
+}
+func (m *SignedChaincodeDeploymentSpec) XXX_DiscardUnknown() {
+	xxx_messageInfo_SignedChaincodeDeploymentSpec.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_SignedChaincodeDeploymentSpec proto.InternalMessageInfo
 
 func (m *SignedChaincodeDeploymentSpec) GetChaincodeDeploymentSpec() []byte {
 	if m != nil {
@@ -57,9 +88,9 @@ func init() {
 	proto.RegisterType((*SignedChaincodeDeploymentSpec)(nil), "protos.SignedChaincodeDeploymentSpec")
 }
 
-func init() { proto.RegisterFile("peer/signed_cc_dep_spec.proto", fileDescriptor11) }
+func init() { proto.RegisterFile("peer/signed_cc_dep_spec.proto", fileDescriptor_e007a7c0644e7e6f) }
 
-var fileDescriptor11 = []byte{
+var fileDescriptor_e007a7c0644e7e6f = []byte{
 	// 255 bytes of a gzipped FileDescriptorProto
 	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x74, 0x90, 0xc1, 0x4a, 0xc3, 0x40,
 	0x10, 0x86, 0xa9, 0x05, 0x0f, 0xab, 0x17, 0x53, 0xc1, 0x28, 0x16, 0x4a, 0x4f, 0xf5, 0x92, 0xa0,

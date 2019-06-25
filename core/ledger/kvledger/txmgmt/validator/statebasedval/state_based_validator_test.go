@@ -22,16 +22,15 @@ import (
 	"testing"
 
 	"github.com/hyperledger/fabric/common/flogging"
-	"github.com/hyperledger/fabric/common/ledger/testutil"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
-	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/validator/valinternal"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/validator/internal"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
 	"github.com/hyperledger/fabric/core/ledger/util"
 	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
 	"github.com/hyperledger/fabric/protos/peer"
-	"github.com/spf13/viper"
+	"github.com/stretchr/testify/assert"
 )
 
 type keyValue struct {
@@ -44,10 +43,7 @@ type keyValue struct {
 }
 
 func TestMain(m *testing.M) {
-	flogging.SetModuleLevel("statevalidator", "debug")
-	flogging.SetModuleLevel("statebasedval", "debug")
-	flogging.SetModuleLevel("statecouchdb", "debug")
-	viper.Set("peer.fileSystemPath", "/tmp/fabric/ledgertests/kvledger/txmgmt/validator/statebasedval")
+	flogging.ActivateSpec("statevalidator,statebasedval,statecouchdb=debug")
 	os.Exit(m.Run())
 }
 
@@ -97,9 +93,9 @@ func TestValidatorBulkLoadingOfCache(t *testing.T) {
 
 	// Construct internal block
 	transRWSets := getTestPubSimulationRWSet(t, rwsetBuilder1, rwsetBuilder2)
-	var trans []*valinternal.Transaction
+	var trans []*internal.Transaction
 	for i, tranRWSet := range transRWSets {
-		tx := &valinternal.Transaction{
+		tx := &internal.Transaction{
 			ID:             fmt.Sprintf("txid-%d", i),
 			IndexInBlock:   i,
 			ValidationCode: peer.TxValidationCode_VALID,
@@ -107,7 +103,7 @@ func TestValidatorBulkLoadingOfCache(t *testing.T) {
 		}
 		trans = append(trans, tx)
 	}
-	block := &valinternal.Block{Num: 1, Txs: trans}
+	block := &internal.Block{Num: 1, Txs: trans}
 
 	if validator.db.IsBulkOptimizable() {
 
@@ -121,60 +117,60 @@ func TestValidatorBulkLoadingOfCache(t *testing.T) {
 
 		// pubKV1 should be found in cache
 		version, keyFound := bulkOptimizable.GetCachedVersion(pubKV1.namespace, pubKV1.key)
-		testutil.AssertEquals(t, keyFound, true)
-		testutil.AssertEquals(t, version, pubKV1.version)
+		assert.True(t, keyFound)
+		assert.Equal(t, pubKV1.version, version)
 
 		// pubKV2 should be found in cache
 		version, keyFound = bulkOptimizable.GetCachedVersion(pubKV2.namespace, pubKV2.key)
-		testutil.AssertEquals(t, keyFound, true)
-		testutil.AssertEquals(t, version, pubKV2.version)
+		assert.True(t, keyFound)
+		assert.Equal(t, pubKV2.version, version)
 
 		// [ns3, key1] should be found in cache as it was in the readset of transaction 1 though it is
 		// not in the state db but the version would be nil
 		version, keyFound = bulkOptimizable.GetCachedVersion("ns3", "key1")
-		testutil.AssertEquals(t, keyFound, true)
-		testutil.AssertEquals(t, version, nil)
+		assert.True(t, keyFound)
+		assert.Nil(t, version)
 
 		// [ns4, key1] should not be found in cache as it was not loaded
 		version, keyFound = bulkOptimizable.GetCachedVersion("ns4", "key1")
-		testutil.AssertEquals(t, keyFound, false)
-		testutil.AssertEquals(t, version, nil)
+		assert.False(t, keyFound)
+		assert.Nil(t, version)
 
 		// hashedKV1 should be found in cache
 		version, keyFound = validator.db.GetCachedKeyHashVersion(hashedKV1.namespace,
 			hashedKV1.collection, hashedKV1.keyHash)
-		testutil.AssertEquals(t, keyFound, true)
-		testutil.AssertEquals(t, version, hashedKV1.version)
+		assert.True(t, keyFound)
+		assert.Equal(t, hashedKV1.version, version)
 
 		// hashedKV2 should be found in cache
 		version, keyFound = validator.db.GetCachedKeyHashVersion(hashedKV2.namespace,
 			hashedKV2.collection, hashedKV2.keyHash)
-		testutil.AssertEquals(t, keyFound, true)
-		testutil.AssertEquals(t, version, hashedKV2.version)
+		assert.True(t, keyFound)
+		assert.Equal(t, hashedKV2.version, version)
 
 		// [ns3, col1, hashedPvtKey1] should be found in cache as it was in the readset of transaction 2 though it is
 		// not in the state db
 		version, keyFound = validator.db.GetCachedKeyHashVersion("ns3", "col1", util.ComputeStringHash("hashedPvtKey1"))
-		testutil.AssertEquals(t, keyFound, true)
-		testutil.AssertEquals(t, version, nil)
+		assert.True(t, keyFound)
+		assert.Nil(t, version)
 
 		// [ns4, col, key1] should not be found in cache as it was not loaded
 		version, keyFound = validator.db.GetCachedKeyHashVersion("ns4", "col1", util.ComputeStringHash("key1"))
-		testutil.AssertEquals(t, keyFound, false)
-		testutil.AssertEquals(t, version, nil)
+		assert.False(t, keyFound)
+		assert.Nil(t, version)
 
 		// Clear cache
 		validator.db.ClearCachedVersions()
 
 		// pubKV1 should not be found in cache as cahce got emptied
 		version, keyFound = bulkOptimizable.GetCachedVersion(pubKV1.namespace, pubKV1.key)
-		testutil.AssertEquals(t, keyFound, false)
-		testutil.AssertEquals(t, version, nil)
+		assert.False(t, keyFound)
+		assert.Nil(t, version)
 
 		// [ns3, col1, key1] should not be found in cache as cahce got emptied
 		version, keyFound = validator.db.GetCachedKeyHashVersion("ns3", "col1", util.ComputeStringHash("hashedPvtKey1"))
-		testutil.AssertEquals(t, keyFound, false)
-		testutil.AssertEquals(t, version, nil)
+		assert.False(t, keyFound)
+		assert.Nil(t, version)
 	}
 }
 
@@ -241,7 +237,7 @@ func TestPhantomValidation(t *testing.T) {
 	//rwset1 should be valid
 	rwsetBuilder1 := rwsetutil.NewRWSetBuilder()
 	rqi1 := &kvrwset.RangeQueryInfo{StartKey: "key2", EndKey: "key4", ItrExhausted: true}
-	rqi1.SetRawReads([]*kvrwset.KVRead{
+	rwsetutil.SetRawReads(rqi1, []*kvrwset.KVRead{
 		rwsetutil.NewKVRead("key2", version.NewHeight(1, 1)),
 		rwsetutil.NewKVRead("key3", version.NewHeight(1, 2))})
 	rwsetBuilder1.AddToRangeQuerySet("ns1", rqi1)
@@ -250,7 +246,7 @@ func TestPhantomValidation(t *testing.T) {
 	//rwset2 should not be valid - Version of key4 changed
 	rwsetBuilder2 := rwsetutil.NewRWSetBuilder()
 	rqi2 := &kvrwset.RangeQueryInfo{StartKey: "key2", EndKey: "key4", ItrExhausted: false}
-	rqi2.SetRawReads([]*kvrwset.KVRead{
+	rwsetutil.SetRawReads(rqi2, []*kvrwset.KVRead{
 		rwsetutil.NewKVRead("key2", version.NewHeight(1, 1)),
 		rwsetutil.NewKVRead("key3", version.NewHeight(1, 2)),
 		rwsetutil.NewKVRead("key4", version.NewHeight(1, 2))})
@@ -260,7 +256,7 @@ func TestPhantomValidation(t *testing.T) {
 	//rwset3 should not be valid - simulate key3 got committed to db
 	rwsetBuilder3 := rwsetutil.NewRWSetBuilder()
 	rqi3 := &kvrwset.RangeQueryInfo{StartKey: "key2", EndKey: "key4", ItrExhausted: false}
-	rqi3.SetRawReads([]*kvrwset.KVRead{
+	rwsetutil.SetRawReads(rqi3, []*kvrwset.KVRead{
 		rwsetutil.NewKVRead("key2", version.NewHeight(1, 1)),
 		rwsetutil.NewKVRead("key4", version.NewHeight(1, 3))})
 	rwsetBuilder3.AddToRangeQuerySet("ns1", rqi3)
@@ -271,7 +267,7 @@ func TestPhantomValidation(t *testing.T) {
 	rwsetBuilder4.AddToWriteSet("ns1", "key3", nil)
 	rwsetBuilder5 := rwsetutil.NewRWSetBuilder()
 	rqi5 := &kvrwset.RangeQueryInfo{StartKey: "key2", EndKey: "key4", ItrExhausted: false}
-	rqi5.SetRawReads([]*kvrwset.KVRead{
+	rwsetutil.SetRawReads(rqi5, []*kvrwset.KVRead{
 		rwsetutil.NewKVRead("key2", version.NewHeight(1, 1)),
 		rwsetutil.NewKVRead("key3", version.NewHeight(1, 2)),
 		rwsetutil.NewKVRead("key4", version.NewHeight(1, 3))})
@@ -284,7 +280,7 @@ func TestPhantomValidation(t *testing.T) {
 
 	rwsetBuilder7 := rwsetutil.NewRWSetBuilder()
 	rqi7 := &kvrwset.RangeQueryInfo{StartKey: "key2", EndKey: "key4", ItrExhausted: false}
-	rqi7.SetRawReads([]*kvrwset.KVRead{
+	rwsetutil.SetRawReads(rqi7, []*kvrwset.KVRead{
 		rwsetutil.NewKVRead("key2", version.NewHeight(1, 1)),
 		rwsetutil.NewKVRead("key3", version.NewHeight(1, 2)),
 		rwsetutil.NewKVRead("key4", version.NewHeight(1, 3))})
@@ -324,7 +320,7 @@ func TestPhantomHashBasedValidation(t *testing.T) {
 		rwsetutil.NewKVRead("key7", version.NewHeight(1, 6)),
 		rwsetutil.NewKVRead("key8", version.NewHeight(1, 7)),
 	}
-	rqi1.SetMerkelSummary(buildTestHashResults(t, 2, kvReadsDuringSimulation1))
+	rwsetutil.SetMerkelSummary(rqi1, buildTestHashResults(t, 2, kvReadsDuringSimulation1))
 	rwsetBuilder1.AddToRangeQuerySet("ns1", rqi1)
 	checkValidation(t, validator, getTestPubSimulationRWSet(t, rwsetBuilder1), []int{})
 
@@ -341,15 +337,15 @@ func TestPhantomHashBasedValidation(t *testing.T) {
 		rwsetutil.NewKVRead("key8", version.NewHeight(1, 7)),
 		rwsetutil.NewKVRead("key9", version.NewHeight(1, 8)),
 	}
-	rqi2.SetMerkelSummary(buildTestHashResults(t, 2, kvReadsDuringSimulation2))
+	rwsetutil.SetMerkelSummary(rqi2, buildTestHashResults(t, 2, kvReadsDuringSimulation2))
 	rwsetBuilder2.AddToRangeQuerySet("ns1", rqi2)
 	checkValidation(t, validator, getTestPubSimulationRWSet(t, rwsetBuilder2), []int{0})
 }
 
 func checkValidation(t *testing.T, val *Validator, transRWSets []*rwsetutil.TxRwSet, expectedInvalidTxIndexes []int) {
-	var trans []*valinternal.Transaction
+	var trans []*internal.Transaction
 	for i, tranRWSet := range transRWSets {
-		tx := &valinternal.Transaction{
+		tx := &internal.Transaction{
 			ID:             fmt.Sprintf("txid-%d", i),
 			IndexInBlock:   i,
 			ValidationCode: peer.TxValidationCode_VALID,
@@ -357,9 +353,9 @@ func checkValidation(t *testing.T, val *Validator, transRWSets []*rwsetutil.TxRw
 		}
 		trans = append(trans, tx)
 	}
-	block := &valinternal.Block{Num: 1, Txs: trans}
+	block := &internal.Block{Num: 1, Txs: trans}
 	_, err := val.ValidateAndPrepareBatch(block, true)
-	testutil.AssertNoError(t, err, "")
+	assert.NoError(t, err)
 	t.Logf("block.Txs[0].ValidationCode = %d", block.Txs[0].ValidationCode)
 	var invalidTxs []int
 	for _, tx := range block.Txs {
@@ -367,8 +363,8 @@ func checkValidation(t *testing.T, val *Validator, transRWSets []*rwsetutil.TxRw
 			invalidTxs = append(invalidTxs, tx.IndexInBlock)
 		}
 	}
-	testutil.AssertEquals(t, len(invalidTxs), len(expectedInvalidTxIndexes))
-	testutil.AssertContainsAll(t, invalidTxs, expectedInvalidTxIndexes)
+	assert.Equal(t, len(expectedInvalidTxIndexes), len(invalidTxs))
+	assert.ElementsMatch(t, invalidTxs, expectedInvalidTxIndexes)
 }
 
 func buildTestHashResults(t *testing.T, maxDegree int, kvReads []*kvrwset.KVRead) *kvrwset.QueryReadsMerkleSummary {
@@ -380,8 +376,8 @@ func buildTestHashResults(t *testing.T, maxDegree int, kvReads []*kvrwset.KVRead
 		helper.AddResult(kvRead)
 	}
 	_, h, err := helper.Done()
-	testutil.AssertNoError(t, err, "")
-	testutil.AssertNotNil(t, h)
+	assert.NoError(t, err)
+	assert.NotNil(t, h)
 	return h
 }
 
@@ -389,11 +385,11 @@ func getTestPubSimulationRWSet(t *testing.T, builders ...*rwsetutil.RWSetBuilder
 	var pubRWSets []*rwsetutil.TxRwSet
 	for _, b := range builders {
 		s, e := b.GetTxSimulationResults()
-		testutil.AssertNoError(t, e, "")
+		assert.NoError(t, e)
 		sBytes, err := s.GetPubSimulationBytes()
-		testutil.AssertNoError(t, err, "")
+		assert.NoError(t, err)
 		pubRWSet := &rwsetutil.TxRwSet{}
-		testutil.AssertNoError(t, pubRWSet.FromProtoBytes(sBytes), "")
+		assert.NoError(t, pubRWSet.FromProtoBytes(sBytes))
 		pubRWSets = append(pubRWSets, pubRWSet)
 	}
 	return pubRWSets

@@ -7,20 +7,21 @@ SPDX-License-Identifier: Apache-2.0
 package comm
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
 
 	"github.com/hyperledger/fabric/gossip/common"
+	"github.com/hyperledger/fabric/gossip/metrics"
+	"github.com/hyperledger/fabric/gossip/protoext"
 	"github.com/hyperledger/fabric/gossip/util"
 	proto "github.com/hyperledger/fabric/protos/gossip"
-	"github.com/op/go-logging"
 	"github.com/pkg/errors"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 )
 
-type handler func(message *proto.SignedGossipMessage)
+type handler func(message *protoext.SignedGossipMessage)
 
 type blockingBehavior bool
 
@@ -34,7 +35,8 @@ type connFactory interface {
 }
 
 type connectionStore struct {
-	logger           *logging.Logger        // logger
+	config           ConnConfig
+	logger           util.Logger            // logger
 	isClosing        bool                   // whether this connection store is shutting down
 	connFactory      connFactory            // creates a connection to remote peer
 	sync.RWMutex                            // synchronize access to shared variables
@@ -43,13 +45,14 @@ type connectionStore struct {
 	// used to prevent concurrent connection establishment to the same remote endpoint
 }
 
-func newConnStore(connFactory connFactory, logger *logging.Logger) *connectionStore {
+func newConnStore(connFactory connFactory, logger util.Logger, config ConnConfig) *connectionStore {
 	return &connectionStore{
 		connFactory:      connFactory,
 		isClosing:        false,
 		pki2Conn:         make(map[string]*connection),
 		destinationLocks: make(map[string]*sync.Mutex),
 		logger:           logger,
+		config:           config,
 	}
 }
 
@@ -129,16 +132,6 @@ func (cs *connectionStore) connNum() int {
 	return len(cs.pki2Conn)
 }
 
-func (cs *connectionStore) closeConn(peer *RemotePeer) {
-	cs.Lock()
-	defer cs.Unlock()
-
-	if conn, exists := cs.pki2Conn[string(peer.PKIID)]; exists {
-		conn.close()
-		delete(cs.pki2Conn, string(conn.pkiID))
-	}
-}
-
 func (cs *connectionStore) shutdown() {
 	cs.Lock()
 	cs.isClosing = true
@@ -154,14 +147,17 @@ func (cs *connectionStore) shutdown() {
 	for _, conn := range connections2Close {
 		wg.Add(1)
 		go func(conn *connection) {
-			cs.closeByPKIid(conn.pkiID)
+			cs.closeConnByPKIid(conn.pkiID)
 			wg.Done()
 		}(conn)
 	}
 	wg.Wait()
 }
 
-func (cs *connectionStore) onConnected(serverStream proto.Gossip_GossipStreamServer, connInfo *proto.ConnectionInfo) *connection {
+// onConnected closes any connection to the remote peer and creates a new connection object to it in order to have only
+// one single bi-directional connection between a pair of peers
+func (cs *connectionStore) onConnected(serverStream proto.Gossip_GossipStreamServer,
+	connInfo *protoext.ConnectionInfo, metrics *metrics.CommMetrics) *connection {
 	cs.Lock()
 	defer cs.Unlock()
 
@@ -169,11 +165,7 @@ func (cs *connectionStore) onConnected(serverStream proto.Gossip_GossipStreamSer
 		c.close()
 	}
 
-	return cs.registerConn(connInfo, serverStream)
-}
-
-func (cs *connectionStore) registerConn(connInfo *proto.ConnectionInfo, serverStream proto.Gossip_GossipStreamServer) *connection {
-	conn := newConnection(nil, nil, nil, serverStream)
+	conn := newConnection(nil, nil, nil, serverStream, metrics, cs.config)
 	conn.pkiID = connInfo.ID
 	conn.info = connInfo
 	conn.logger = cs.logger
@@ -181,7 +173,7 @@ func (cs *connectionStore) registerConn(connInfo *proto.ConnectionInfo, serverSt
 	return conn
 }
 
-func (cs *connectionStore) closeByPKIid(pkiID common.PKIidType) {
+func (cs *connectionStore) closeConnByPKIid(pkiID common.PKIidType) {
 	cs.Lock()
 	defer cs.Unlock()
 	if conn, exists := cs.pki2Conn[string(pkiID)]; exists {
@@ -190,24 +182,35 @@ func (cs *connectionStore) closeByPKIid(pkiID common.PKIidType) {
 	}
 }
 
-func newConnection(cl proto.GossipClient, c *grpc.ClientConn, cs proto.Gossip_GossipStreamClient, ss proto.Gossip_GossipStreamServer) *connection {
+func newConnection(cl proto.GossipClient, c *grpc.ClientConn, cs proto.Gossip_GossipStreamClient,
+	ss proto.Gossip_GossipStreamServer, metrics *metrics.CommMetrics, config ConnConfig) *connection {
 	connection := &connection{
-		outBuff:      make(chan *msgSending, util.GetIntOrDefault("peer.gossip.sendBuffSize", defSendBuffSize)),
+		metrics:      metrics,
+		outBuff:      make(chan *msgSending, config.SendBuffSize),
 		cl:           cl,
 		conn:         c,
 		clientStream: cs,
 		serverStream: ss,
 		stopFlag:     int32(0),
 		stopChan:     make(chan struct{}, 1),
+		recvBuffSize: config.RecvBuffSize,
 	}
 	return connection
 }
 
+// ConnConfig is the configuration required to initialize a new conn
+type ConnConfig struct {
+	RecvBuffSize int
+	SendBuffSize int
+}
+
 type connection struct {
+	recvBuffSize int
+	metrics      *metrics.CommMetrics
 	cancel       context.CancelFunc
-	info         *proto.ConnectionInfo
+	info         *protoext.ConnectionInfo
 	outBuff      chan *msgSending
-	logger       *logging.Logger                 // logger
+	logger       util.Logger                     // logger
 	pkiID        common.PKIidType                // pkiID of the remote endpoint
 	handler      handler                         // function to invoke upon a message reception
 	conn         *grpc.ClientConn                // gRPC connection to remote endpoint
@@ -217,6 +220,7 @@ type connection struct {
 	stopFlag     int32                           // indicates whether this connection is in process of stopping
 	stopChan     chan struct{}                   // a method to stop the server-side gRPC call from a different go-routine
 	sync.RWMutex                                 // synchronizes access to shared variables
+	stopWG       sync.WaitGroup                  // a method to wait for stream activity to stop before closing it
 }
 
 func (conn *connection) close() {
@@ -229,13 +233,14 @@ func (conn *connection) close() {
 		return
 	}
 
-	conn.stopChan <- struct{}{}
+	close(conn.stopChan)
 
 	conn.drainOutputBuffer()
 	conn.Lock()
 	defer conn.Unlock()
 
 	if conn.clientStream != nil {
+		conn.stopWG.Wait()
 		conn.clientStream.CloseSend()
 	}
 	if conn.conn != nil {
@@ -251,35 +256,33 @@ func (conn *connection) toDie() bool {
 	return atomic.LoadInt32(&(conn.stopFlag)) == int32(1)
 }
 
-func (conn *connection) send(msg *proto.SignedGossipMessage, onErr func(error), shouldBlock blockingBehavior) {
+func (conn *connection) send(msg *protoext.SignedGossipMessage, onErr func(error), shouldBlock blockingBehavior) {
 	if conn.toDie() {
-		conn.logger.Debug("Aborting send() to ", conn.info.Endpoint, "because connection is closing")
+		conn.logger.Debugf("Aborting send() to %s because connection is closing", conn.info.Endpoint)
 		return
 	}
-	conn.Lock()
-	defer conn.Unlock()
 
 	m := &msgSending{
 		envelope: msg.Envelope,
 		onErr:    onErr,
 	}
 
-	if len(conn.outBuff) == util.GetIntOrDefault("peer.gossip.sendBuffSize", defSendBuffSize) {
-		if conn.logger.IsEnabledFor(logging.DEBUG) {
-			conn.logger.Debug("Buffer to", conn.info.Endpoint, "overflowed, dropping message", msg.String())
-		}
-		if !shouldBlock {
-			return
+	select {
+	case conn.outBuff <- m:
+		// room in channel, successfully sent message, nothing to do
+	default: // did not send
+		if shouldBlock {
+			conn.outBuff <- m // try again, and wait to send
+		} else {
+			conn.metrics.BufferOverflow.Add(1)
+			conn.logger.Debugf("Buffer to %s overflowed, dropping message %s", conn.info.Endpoint, msg)
 		}
 	}
-	conn.outBuff <- m
 }
 
 func (conn *connection) serviceConnection() error {
 	errChan := make(chan error, 1)
-	msgChan := make(chan *proto.SignedGossipMessage, util.GetIntOrDefault("peer.gossip.recvBuffSize", defRecvBuffSize))
-	defer close(msgChan)
-
+	msgChan := make(chan *protoext.SignedGossipMessage, conn.recvBuffSize)
 	// Call stream.Recv() asynchronously in readFromStream(),
 	// and wait for either the Recv() call to end,
 	// or a signal to close the connection, which exits
@@ -291,9 +294,8 @@ func (conn *connection) serviceConnection() error {
 
 	for !conn.toDie() {
 		select {
-		case stop := <-conn.stopChan:
+		case <-conn.stopChan:
 			conn.logger.Debug("Closing reading from stream")
-			conn.stopChan <- stop
 			return nil
 		case err := <-errChan:
 			return err
@@ -305,6 +307,13 @@ func (conn *connection) serviceConnection() error {
 }
 
 func (conn *connection) writeToStream() {
+	conn.Lock()
+	if !conn.toDie() {
+		conn.stopWG.Add(1) // wait for write to finish before calling conn.close()
+		defer conn.stopWG.Done()
+	}
+	conn.Unlock()
+
 	for !conn.toDie() {
 		stream := conn.getStream()
 		if stream == nil {
@@ -318,25 +327,27 @@ func (conn *connection) writeToStream() {
 				go m.onErr(err)
 				return
 			}
-		case stop := <-conn.stopChan:
+			conn.metrics.SentMessages.Add(1)
+		case <-conn.stopChan:
 			conn.logger.Debug("Closing writing to stream")
-			conn.stopChan <- stop
 			return
 		}
 	}
 }
 
 func (conn *connection) drainOutputBuffer() {
-	// Drain the output buffer
-	for len(conn.outBuff) > 0 {
-		<-conn.outBuff
+	// Read from the buffer until it is empty.
+	// There may be multiple concurrent readers.
+	for {
+		select {
+		case <-conn.outBuff:
+		default:
+			return
+		}
 	}
 }
 
-func (conn *connection) readFromStream(errChan chan error, msgChan chan *proto.SignedGossipMessage) {
-	defer func() {
-		recover()
-	}() // msgChan might be closed
+func (conn *connection) readFromStream(errChan chan error, msgChan chan *protoext.SignedGossipMessage) {
 	for !conn.toDie() {
 		stream := conn.getStream()
 		if stream == nil {
@@ -345,19 +356,16 @@ func (conn *connection) readFromStream(errChan chan error, msgChan chan *proto.S
 			return
 		}
 		envelope, err := stream.Recv()
-		if conn.toDie() {
-			conn.logger.Debug(conn.pkiID, "canceling read because closing")
-			return
-		}
 		if err != nil {
 			errChan <- err
-			conn.logger.Debugf("%v Got error, aborting: %v", err)
+			conn.logger.Debugf("Got error, aborting: %v", err)
 			return
 		}
-		msg, err := envelope.ToGossipMessage()
+		conn.metrics.ReceivedMessages.Add(1)
+		msg, err := protoext.EnvelopeToGossipMessage(envelope)
 		if err != nil {
 			errChan <- err
-			conn.logger.Warning("%v Got error, aborting: %v", err)
+			conn.logger.Warningf("Got error, aborting: %v", err)
 		}
 		msgChan <- msg
 	}

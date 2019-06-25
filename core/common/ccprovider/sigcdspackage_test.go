@@ -1,17 +1,7 @@
 /*
 Copyright IBM Corp. 2017 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package ccprovider
@@ -24,7 +14,7 @@ import (
 	"github.com/hyperledger/fabric/core/common/ccpackage"
 	"github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -34,7 +24,7 @@ func processSignedCDS(cds *pb.ChaincodeDeploymentSpec, policy *common.SignatureP
 		return nil, nil, nil, fmt.Errorf("could not create package %s", err)
 	}
 
-	b := utils.MarshalOrPanic(env)
+	b := protoutil.MarshalOrPanic(env)
 
 	ccpack := &SignedCDSPackage{}
 	cd, err := ccpack.InitFromBuffer(b)
@@ -258,6 +248,11 @@ func TestValidateSignedCCErrorPaths(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "chaincode deployment spec cannot be nil in a package", "Unexpected error validating package")
 	ccpack.depSpec = depspec
+
+	cd = &ChaincodeData{Name: "\027", Version: "0"}
+	err = ccpack.ValidateCC(cd)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `invalid chaincode name: "\x17"`)
 }
 
 func TestSigCDSGetCCPackage(t *testing.T) {
@@ -269,7 +264,7 @@ func TestSigCDSGetCCPackage(t *testing.T) {
 		return
 	}
 
-	b := utils.MarshalOrPanic(env)
+	b := protoutil.MarshalOrPanic(env)
 
 	ccpack, err := GetCCPackage(b)
 	if err != nil {
@@ -304,18 +299,15 @@ func TestSigCDSGetCCPackage(t *testing.T) {
 func TestInvalidSigCDSGetCCPackage(t *testing.T) {
 	cds := &pb.ChaincodeDeploymentSpec{ChaincodeSpec: &pb.ChaincodeSpec{Type: 1, ChaincodeId: &pb.ChaincodeID{Name: "testcc", Version: "0"}, Input: &pb.ChaincodeInput{Args: [][]byte{[]byte("")}}}, CodePackage: []byte("code")}
 
-	b := utils.MarshalOrPanic(cds)
-
+	b := protoutil.MarshalOrPanic(cds)
 	ccpack, err := GetCCPackage(b)
 	if err != nil {
 		t.Fatalf("failed to get CCPackage %s", err)
-		return
 	}
 
 	ccsignedcdspack, ok := ccpack.(*SignedCDSPackage)
 	if ok || ccsignedcdspack != nil {
 		t.Fatalf("expected failure to get Signed CDS CCPackage but succeeded")
-		return
 	}
 }
 

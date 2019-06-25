@@ -4,9 +4,10 @@ Copyright IBM Corp. All Rights Reserved.
 SPDX-License-Identifier: Apache-2.0
 */
 
-package deliverclient
+package deliverservice
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"math"
@@ -20,27 +21,26 @@ import (
 	"github.com/hyperledger/fabric/core/deliverservice/mocks"
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/orderer"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/stretchr/testify/assert"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 )
 
-var connNumber = 0
+var (
+	connWG sync.WaitGroup
+)
 
 func newConnection() *grpc.ClientConn {
-	connNumber++
 	// The balancer is in order to check connection leaks.
 	// When grpc.ClientConn.Close() is called, it calls the balancer's Close()
-	// method which decrements the connNumber
 	cc, _ := grpc.Dial("", grpc.WithInsecure(), grpc.WithBalancer(&balancer{}))
 	return cc
 }
 
-type balancer struct {
-}
+type balancer struct{}
 
 func (*balancer) Start(target string, config grpc.BalancerConfig) error {
+	connWG.Add(1)
 	return nil
 }
 
@@ -57,7 +57,7 @@ func (*balancer) Notify() <-chan []grpc.Address {
 }
 
 func (*balancer) Close() error {
-	connNumber--
+	connWG.Done()
 	return nil
 }
 
@@ -154,7 +154,7 @@ func (cp *connProducer) DisableEndpoint(endpoint string) {
 func TestOrderingServiceConnFailure(t *testing.T) {
 	testOrderingServiceConnFailure(t, blockDelivererConsumerWithRecv)
 	testOrderingServiceConnFailure(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testOrderingServiceConnFailure(t *testing.T, bdc blocksDelivererConsumer) {
@@ -191,7 +191,7 @@ func testOrderingServiceConnFailure(t *testing.T, bdc blocksDelivererConsumer) {
 func TestOrderingServiceStreamFailure(t *testing.T) {
 	testOrderingServiceStreamFailure(t, blockDelivererConsumerWithRecv)
 	testOrderingServiceStreamFailure(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testOrderingServiceStreamFailure(t *testing.T, bdc blocksDelivererConsumer) {
@@ -227,7 +227,7 @@ func testOrderingServiceStreamFailure(t *testing.T, bdc blocksDelivererConsumer)
 func TestOrderingServiceSetupFailure(t *testing.T) {
 	testOrderingServiceSetupFailure(t, blockDelivererConsumerWithRecv)
 	testOrderingServiceSetupFailure(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testOrderingServiceSetupFailure(t *testing.T, bdc blocksDelivererConsumer) {
@@ -261,7 +261,7 @@ func testOrderingServiceSetupFailure(t *testing.T, bdc blocksDelivererConsumer) 
 func TestOrderingServiceFirstOperationFailure(t *testing.T) {
 	testOrderingServiceFirstOperationFailure(t, blockDelivererConsumerWithRecv)
 	testOrderingServiceFirstOperationFailure(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testOrderingServiceFirstOperationFailure(t *testing.T, bdc blocksDelivererConsumer) {
@@ -298,7 +298,7 @@ func testOrderingServiceFirstOperationFailure(t *testing.T, bdc blocksDelivererC
 func TestOrderingServiceCrashAndRecover(t *testing.T) {
 	testOrderingServiceCrashAndRecover(t, blockDelivererConsumerWithRecv)
 	testOrderingServiceCrashAndRecover(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testOrderingServiceCrashAndRecover(t *testing.T, bdc blocksDelivererConsumer) {
@@ -339,7 +339,7 @@ func testOrderingServiceCrashAndRecover(t *testing.T, bdc blocksDelivererConsume
 func TestOrderingServicePermanentCrash(t *testing.T) {
 	testOrderingServicePermanentCrash(t, blockDelivererConsumerWithRecv)
 	testOrderingServicePermanentCrash(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testOrderingServicePermanentCrash(t *testing.T, bdc blocksDelivererConsumer) {
@@ -377,7 +377,7 @@ func testOrderingServicePermanentCrash(t *testing.T, bdc blocksDelivererConsumer
 func TestLimitedConnAttempts(t *testing.T) {
 	testLimitedConnAttempts(t, blockDelivererConsumerWithRecv)
 	testLimitedConnAttempts(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testLimitedConnAttempts(t *testing.T, bdc blocksDelivererConsumer) {
@@ -405,12 +405,12 @@ func testLimitedConnAttempts(t *testing.T, bdc blocksDelivererConsumer) {
 
 func TestLimitedTotalConnTimeRcv(t *testing.T) {
 	testLimitedTotalConnTime(t, blockDelivererConsumerWithRecv)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func TestLimitedTotalConnTimeSnd(t *testing.T) {
 	testLimitedTotalConnTime(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testLimitedTotalConnTime(t *testing.T, bdc blocksDelivererConsumer) {
@@ -441,7 +441,7 @@ func testLimitedTotalConnTime(t *testing.T, bdc blocksDelivererConsumer) {
 func TestGreenPath(t *testing.T) {
 	testGreenPath(t, blockDelivererConsumerWithRecv)
 	testGreenPath(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testGreenPath(t *testing.T, bdc blocksDelivererConsumer) {
@@ -501,13 +501,13 @@ func TestCloseWhileRecv(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&flag), "Recv returned before bc.Close() was called")
 	assert.Nil(t, resp)
 	assert.Error(t, err)
-	assert.Contains(t, "Client is closing", err.Error())
+	assert.Contains(t, "client is closing", err.Error())
 }
 
 func TestCloseWhileSleep(t *testing.T) {
 	testCloseWhileSleep(t, blockDelivererConsumerWithRecv)
 	testCloseWhileSleep(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testCloseWhileSleep(t *testing.T, bdc blocksDelivererConsumer) {
@@ -552,8 +552,8 @@ func testCloseWhileSleep(t *testing.T, bdc blocksDelivererConsumer) {
 type signerMock struct {
 }
 
-func (s *signerMock) NewSignatureHeader() (*common.SignatureHeader, error) {
-	return &common.SignatureHeader{}, nil
+func (s *signerMock) Serialize() ([]byte, error) {
+	return []byte("creator"), nil
 }
 
 func (s *signerMock) Sign(message []byte) ([]byte, error) {
@@ -577,7 +577,7 @@ func TestProductionUsage(t *testing.T) {
 		return orderer.NewAtomicBroadcastClient(cc)
 	}
 	onConnect := func(bd blocksprovider.BlocksDeliverer) error {
-		env, err := utils.CreateSignedEnvelope(common.HeaderType_CONFIG_UPDATE,
+		env, err := protoutil.CreateSignedEnvelope(common.HeaderType_CONFIG_UPDATE,
 			"TEST",
 			&signerMock{}, newTestSeekInfo(), 0, 0)
 		assert.NoError(t, err)
@@ -642,7 +642,7 @@ func TestDisconnect(t *testing.T) {
 		stopChan <- struct{}{}
 	}()
 	waitForConnectionToSomeOSN()
-	cl.Disconnect(false)
+	cl.Disconnect()
 
 	i := 0
 	os1Connected := false
@@ -662,7 +662,7 @@ func TestDisconnect(t *testing.T) {
 		if i == 100 {
 			assert.Fail(t, "Didn't switch to other instance after many attempts")
 		}
-		cl.Disconnect(false)
+		cl.Disconnect()
 		time.Sleep(time.Millisecond * 500)
 	}
 	cl.Close()
@@ -670,98 +670,6 @@ func TestDisconnect(t *testing.T) {
 	case <-stopChan:
 	case <-time.After(time.Second * 20):
 		assert.Fail(t, "Didn't stop within a timely manner")
-	}
-}
-
-func TestDisconnectAndDisableEndpoint(t *testing.T) {
-	// Scenario:
-	// 1)  Start two ordering service nodes and one client
-	// 2) Have the client connect to some ordering service node
-	// 3) Disconnect and disable the endpoint of the current connection,
-	//    and ensure the client connects to the other node.
-	// 4) Black-list the second connection and ensure it still connects
-	//    to the ordering service node because it's the last one remaining.
-
-	defer ensureNoGoroutineLeak(t)()
-	os1 := mocks.NewOrderer(5613, t)
-	os1.SetNextExpectedSeek(5)
-	os2 := mocks.NewOrderer(5614, t)
-	os2.SetNextExpectedSeek(5)
-
-	defer os1.Shutdown()
-	defer os2.Shutdown()
-
-	orgEndpointDisableInterval := comm.EndpointDisableInterval
-	comm.EndpointDisableInterval = time.Millisecond * 1500
-	defer func() { comm.EndpointDisableInterval = orgEndpointDisableInterval }()
-
-	connFact := func(endpoint string) (*grpc.ClientConn, error) {
-		return grpc.Dial(endpoint, grpc.WithInsecure(), grpc.WithBlock())
-	}
-	prod := comm.NewConnectionProducer(connFact, []string{"localhost:5613", "localhost:5614"})
-	clFact := func(cc *grpc.ClientConn) orderer.AtomicBroadcastClient {
-		return orderer.NewAtomicBroadcastClient(cc)
-	}
-	onConnect := func(bd blocksprovider.BlocksDeliverer) error {
-		return nil
-	}
-
-	retryPol := func(attemptNum int, elapsedTime time.Duration) (time.Duration, bool) {
-		return time.Millisecond * 10, attemptNum < 10
-	}
-
-	cl := NewBroadcastClient(prod, clFact, onConnect, retryPol)
-	defer cl.Close()
-
-	// First connect to orderer
-	go func() {
-		cl.Recv()
-	}()
-
-	assert.True(t, waitForWithTimeout(time.Millisecond*100, func() bool {
-		return os1.ConnCount() == 1 || os2.ConnCount() == 1
-	}), "Didn't get connection to orderer")
-
-	connectedToOS1 := os1.ConnCount() == 1
-
-	// Disconnect and disable endpoint
-	cl.Disconnect(true)
-
-	// Ensure we reconnected to the other node
-	assert.True(t, waitForWithTimeout(time.Millisecond*100, func() bool {
-		if connectedToOS1 {
-			return os1.ConnCount() == 0 && os2.ConnCount() == 1
-		}
-		return os2.ConnCount() == 0 && os1.ConnCount() == 1
-	}), "Didn't disconnect from orderer, or reconnected to a black-listed node")
-
-	// Disconnect from the node we are currently connected to, and attempt to black-list it
-	cl.Disconnect(true)
-
-	go func() {
-		cl.Recv()
-	}()
-
-	// Ensure we are still connected to some orderer, even though both endpoints are now black-listed
-	assert.True(t, waitForWithTimeout(time.Millisecond*100, func() bool {
-		return os1.ConnCount() == 1 || os2.ConnCount() == 1
-	}), "Didn't got connection to orderer")
-}
-
-func waitForWithTimeout(timeout time.Duration, f func() bool) bool {
-
-	ctx, cancelation := context.WithTimeout(context.Background(), timeout)
-	defer cancelation()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(timeout / 10):
-			if f() {
-				return true
-			}
-		}
 	}
 }
 

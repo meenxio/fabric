@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package historyleveldb
@@ -24,16 +14,25 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/kvledger/history/historydb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
-	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
 	"github.com/hyperledger/fabric/core/ledger/util"
 	"github.com/hyperledger/fabric/protos/common"
-	putils "github.com/hyperledger/fabric/protos/utils"
+	protoutil "github.com/hyperledger/fabric/protoutil"
 )
 
-var logger = flogging.MustGetLogger("historyleveldb")
+var logger historydbLogger = flogging.MustGetLogger("historyleveldb")
 
 var savePointKey = []byte{0x00}
 var emptyValue = []byte{}
+
+//go:generate counterfeiter -o fakes/historydb_logger.go -fake-name HistorydbLogger . historydbLogger
+
+// historydbLogger defines the interface for historyleveldb logging. The purpose is to allow unit tests to use a fake logger.
+type historydbLogger interface {
+	Debugf(template string, args ...interface{})
+	Errorf(template string, args ...interface{})
+	Infof(template string, args ...interface{})
+	Warnf(template string, args ...interface{})
+}
 
 // HistoryDBProvider implements interface HistoryDBProvider
 type HistoryDBProvider struct {
@@ -41,21 +40,26 @@ type HistoryDBProvider struct {
 }
 
 // NewHistoryDBProvider instantiates HistoryDBProvider
-func NewHistoryDBProvider() *HistoryDBProvider {
-	dbPath := ledgerconfig.GetHistoryLevelDBPath()
+func NewHistoryDBProvider(dbPath string) *HistoryDBProvider {
 	logger.Debugf("constructing HistoryDBProvider dbPath=%s", dbPath)
 	dbProvider := leveldbhelper.NewProvider(&leveldbhelper.Conf{DBPath: dbPath})
-	return &HistoryDBProvider{dbProvider}
+	return &HistoryDBProvider{
+		dbProvider: dbProvider,
+	}
 }
 
 // GetDBHandle gets the handle to a named database
-func (provider *HistoryDBProvider) GetDBHandle(dbName string) (historydb.HistoryDB, error) {
-	return newHistoryDB(provider.dbProvider.GetDBHandle(dbName), dbName), nil
+func (p *HistoryDBProvider) GetDBHandle(dbName string) (historydb.HistoryDB, error) {
+	return newHistoryDB(
+			p.dbProvider.GetDBHandle(dbName),
+			dbName,
+		),
+		nil
 }
 
 // Close closes the underlying db
-func (provider *HistoryDBProvider) Close() {
-	provider.dbProvider.Close()
+func (p *HistoryDBProvider) Close() {
+	p.dbProvider.Close()
 }
 
 // historyDB implements HistoryDB interface
@@ -66,22 +70,14 @@ type historyDB struct {
 
 // newHistoryDB constructs an instance of HistoryDB
 func newHistoryDB(db *leveldbhelper.DBHandle, dbName string) *historyDB {
-	return &historyDB{db, dbName}
-}
-
-// Open implements method in HistoryDB interface
-func (historyDB *historyDB) Open() error {
-	// do nothing because shared db is used
-	return nil
-}
-
-// Close implements method in HistoryDB interface
-func (historyDB *historyDB) Close() {
-	// do nothing because shared db is used
+	return &historyDB{
+		db:     db,
+		dbName: dbName,
+	}
 }
 
 // Commit implements method in HistoryDB interface
-func (historyDB *historyDB) Commit(block *common.Block) error {
+func (h *historyDB) Commit(block *common.Block) error {
 
 	blockNo := block.Header.Number
 	//Set the starting tranNo to 0
@@ -90,15 +86,10 @@ func (historyDB *historyDB) Commit(block *common.Block) error {
 	dbBatch := leveldbhelper.NewUpdateBatch()
 
 	logger.Debugf("Channel [%s]: Updating history database for blockNo [%v] with [%d] transactions",
-		historyDB.dbName, blockNo, len(block.Data.Data))
+		h.dbName, blockNo, len(block.Data.Data))
 
 	// Get the invalidation byte array for the block
 	txsFilter := util.TxValidationFlags(block.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER])
-	// Initialize txsFilter if it does not yet exist (e.g. during testing, for genesis block, etc)
-	if len(txsFilter) == 0 {
-		txsFilter = util.NewTxValidationFlags(len(block.Data.Data))
-		block.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER] = txsFilter
-	}
 
 	// write each tran's write set to history db
 	for _, envBytes := range block.Data.Data {
@@ -106,22 +97,22 @@ func (historyDB *historyDB) Commit(block *common.Block) error {
 		// If the tran is marked as invalid, skip it
 		if txsFilter.IsInvalid(int(tranNo)) {
 			logger.Debugf("Channel [%s]: Skipping history write for invalid transaction number %d",
-				historyDB.dbName, tranNo)
+				h.dbName, tranNo)
 			tranNo++
 			continue
 		}
 
-		env, err := putils.GetEnvelopeFromBlock(envBytes)
+		env, err := protoutil.GetEnvelopeFromBlock(envBytes)
 		if err != nil {
 			return err
 		}
 
-		payload, err := putils.GetPayload(env)
+		payload, err := protoutil.GetPayload(env)
 		if err != nil {
 			return err
 		}
 
-		chdr, err := putils.UnmarshalChannelHeader(payload.Header.ChannelHeader)
+		chdr, err := protoutil.UnmarshalChannelHeader(payload.Header.ChannelHeader)
 		if err != nil {
 			return err
 		}
@@ -129,7 +120,7 @@ func (historyDB *historyDB) Commit(block *common.Block) error {
 		if common.HeaderType(chdr.Type) == common.HeaderType_ENDORSER_TRANSACTION {
 
 			// extract actions from the envelope message
-			respPayload, err := putils.GetActionFromEnvelope(envBytes)
+			respPayload, err := protoutil.GetActionFromEnvelope(envBytes)
 			if err != nil {
 				return err
 			}
@@ -170,22 +161,22 @@ func (historyDB *historyDB) Commit(block *common.Block) error {
 
 	// write the block's history records and savepoint to LevelDB
 	// Setting snyc to true as a precaution, false may be an ok optimization after further testing.
-	if err := historyDB.db.WriteBatch(dbBatch, true); err != nil {
+	if err := h.db.WriteBatch(dbBatch, true); err != nil {
 		return err
 	}
 
-	logger.Debugf("Channel [%s]: Updates committed to history database for blockNo [%v]", historyDB.dbName, blockNo)
+	logger.Debugf("Channel [%s]: Updates committed to history database for blockNo [%v]", h.dbName, blockNo)
 	return nil
 }
 
 // NewHistoryQueryExecutor implements method in HistoryDB interface
-func (historyDB *historyDB) NewHistoryQueryExecutor(blockStore blkstorage.BlockStore) (ledger.HistoryQueryExecutor, error) {
-	return &LevelHistoryDBQueryExecutor{historyDB, blockStore}, nil
+func (h *historyDB) NewHistoryQueryExecutor(blockStore blkstorage.BlockStore) (ledger.HistoryQueryExecutor, error) {
+	return &LevelHistoryDBQueryExecutor{h, blockStore}, nil
 }
 
 // GetBlockNumFromSavepoint implements method in HistoryDB interface
-func (historyDB *historyDB) GetLastSavepoint() (*version.Height, error) {
-	versionBytes, err := historyDB.db.Get(savePointKey)
+func (h *historyDB) GetLastSavepoint() (*version.Height, error) {
+	versionBytes, err := h.db.Get(savePointKey)
 	if err != nil || versionBytes == nil {
 		return nil, err
 	}
@@ -194,11 +185,8 @@ func (historyDB *historyDB) GetLastSavepoint() (*version.Height, error) {
 }
 
 // ShouldRecover implements method in interface kvledger.Recoverer
-func (historyDB *historyDB) ShouldRecover(lastAvailableBlock uint64) (bool, uint64, error) {
-	if !ledgerconfig.IsHistoryDBEnabled() {
-		return false, 0, nil
-	}
-	savepoint, err := historyDB.GetLastSavepoint()
+func (h *historyDB) ShouldRecover(lastAvailableBlock uint64) (bool, uint64, error) {
+	savepoint, err := h.GetLastSavepoint()
 	if err != nil {
 		return false, 0, err
 	}
@@ -209,9 +197,17 @@ func (historyDB *historyDB) ShouldRecover(lastAvailableBlock uint64) (bool, uint
 }
 
 // CommitLostBlock implements method in interface kvledger.Recoverer
-func (historyDB *historyDB) CommitLostBlock(blockAndPvtdata *ledger.BlockAndPvtData) error {
+func (h *historyDB) CommitLostBlock(blockAndPvtdata *ledger.BlockAndPvtData) error {
 	block := blockAndPvtdata.Block
-	if err := historyDB.Commit(block); err != nil {
+
+	// log every 1000th block at Info level so that history rebuild progress can be tracked in production envs.
+	if block.Header.Number%1000 == 0 {
+		logger.Infof("Recommitting block [%d] to history database", block.Header.Number)
+	} else {
+		logger.Debugf("Recommitting block [%d] to history database", block.Header.Number)
+	}
+
+	if err := h.Commit(block); err != nil {
 		return err
 	}
 	return nil

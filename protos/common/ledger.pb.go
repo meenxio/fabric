@@ -3,27 +3,58 @@
 
 package common
 
-import proto "github.com/golang/protobuf/proto"
-import fmt "fmt"
-import math "math"
+import (
+	fmt "fmt"
+	proto "github.com/golang/protobuf/proto"
+	math "math"
+)
 
 // Reference imports to suppress errors if they are not otherwise used.
 var _ = proto.Marshal
 var _ = fmt.Errorf
 var _ = math.Inf
 
+// This is a compile-time assertion to ensure that this generated file
+// is compatible with the proto package it is being compiled against.
+// A compilation error at this line likely means your copy of the
+// proto package needs to be updated.
+const _ = proto.ProtoPackageIsVersion3 // please upgrade the proto package
+
 // Contains information about the blockchain ledger such as height, current
 // block hash, and previous block hash.
 type BlockchainInfo struct {
-	Height            uint64 `protobuf:"varint,1,opt,name=height" json:"height,omitempty"`
-	CurrentBlockHash  []byte `protobuf:"bytes,2,opt,name=currentBlockHash,proto3" json:"currentBlockHash,omitempty"`
-	PreviousBlockHash []byte `protobuf:"bytes,3,opt,name=previousBlockHash,proto3" json:"previousBlockHash,omitempty"`
+	Height               uint64   `protobuf:"varint,1,opt,name=height,proto3" json:"height,omitempty"`
+	CurrentBlockHash     []byte   `protobuf:"bytes,2,opt,name=currentBlockHash,proto3" json:"currentBlockHash,omitempty"`
+	PreviousBlockHash    []byte   `protobuf:"bytes,3,opt,name=previousBlockHash,proto3" json:"previousBlockHash,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
 }
 
-func (m *BlockchainInfo) Reset()                    { *m = BlockchainInfo{} }
-func (m *BlockchainInfo) String() string            { return proto.CompactTextString(m) }
-func (*BlockchainInfo) ProtoMessage()               {}
-func (*BlockchainInfo) Descriptor() ([]byte, []int) { return fileDescriptor4, []int{0} }
+func (m *BlockchainInfo) Reset()         { *m = BlockchainInfo{} }
+func (m *BlockchainInfo) String() string { return proto.CompactTextString(m) }
+func (*BlockchainInfo) ProtoMessage()    {}
+func (*BlockchainInfo) Descriptor() ([]byte, []int) {
+	return fileDescriptor_da3410306adbea27, []int{0}
+}
+
+func (m *BlockchainInfo) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_BlockchainInfo.Unmarshal(m, b)
+}
+func (m *BlockchainInfo) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_BlockchainInfo.Marshal(b, m, deterministic)
+}
+func (m *BlockchainInfo) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_BlockchainInfo.Merge(m, src)
+}
+func (m *BlockchainInfo) XXX_Size() int {
+	return xxx_messageInfo_BlockchainInfo.Size(m)
+}
+func (m *BlockchainInfo) XXX_DiscardUnknown() {
+	xxx_messageInfo_BlockchainInfo.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_BlockchainInfo proto.InternalMessageInfo
 
 func (m *BlockchainInfo) GetHeight() uint64 {
 	if m != nil {
@@ -50,9 +81,9 @@ func init() {
 	proto.RegisterType((*BlockchainInfo)(nil), "common.BlockchainInfo")
 }
 
-func init() { proto.RegisterFile("common/ledger.proto", fileDescriptor4) }
+func init() { proto.RegisterFile("common/ledger.proto", fileDescriptor_da3410306adbea27) }
 
-var fileDescriptor4 = []byte{
+var fileDescriptor_da3410306adbea27 = []byte{
 	// 186 bytes of a gzipped FileDescriptorProto
 	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xe2, 0x12, 0x4e, 0xce, 0xcf, 0xcd,
 	0xcd, 0xcf, 0xd3, 0xcf, 0x49, 0x4d, 0x49, 0x4f, 0x2d, 0xd2, 0x2b, 0x28, 0xca, 0x2f, 0xc9, 0x17,

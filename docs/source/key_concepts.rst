@@ -7,7 +7,12 @@ Key Concepts
    blockchain
    functionalities
    fabric_model
+   network/network.md
    identity/identity.md
    membership/membership.md
-   ledger
+   peers/peers.md
+   smartcontract/smartcontract.md
+   ledger/ledger.md
+   orderer/ordering_service.md
+   private-data/private-data.md
    usecases

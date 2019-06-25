@@ -1,17 +1,7 @@
 /*
 Copyright IBM Corp. 2016 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package fsblkstorage
@@ -20,7 +10,7 @@ import (
 	"github.com/golang/protobuf/proto"
 	ledgerutil "github.com/hyperledger/fabric/common/ledger/util"
 	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
 )
 
 type serializedBlockInfo struct {
@@ -31,8 +21,9 @@ type serializedBlockInfo struct {
 
 //The order of the transactions must be maintained for history
 type txindexInfo struct {
-	txID string
-	loc  *locPointer
+	txID        string
+	loc         *locPointer
+	isDuplicate bool
 }
 
 func serializeBlock(block *common.Block) ([]byte, *serializedBlockInfo, error) {
@@ -118,7 +109,7 @@ func addDataBytes(blockData *common.BlockData, buf *proto.Buffer) ([]*txindexInf
 		if err := buf.EncodeRawBytes(txEnvelopeBytes); err != nil {
 			return nil, err
 		}
-		idxInfo := &txindexInfo{txid, &locPointer{offset, len(buf.Bytes()) - offset}}
+		idxInfo := &txindexInfo{txID: txid, loc: &locPointer{offset, len(buf.Bytes()) - offset}}
 		txOffsets = append(txOffsets, idxInfo)
 	}
 	return txOffsets, nil
@@ -178,7 +169,7 @@ func extractData(buf *ledgerutil.Buffer) (*common.BlockData, []*txindexInfo, err
 			return nil, nil, err
 		}
 		data.Data = append(data.Data, txEnvBytes)
-		idxInfo := &txindexInfo{txid, &locPointer{txOffset, buf.GetBytesConsumed() - txOffset}}
+		idxInfo := &txindexInfo{txID: txid, loc: &locPointer{txOffset, buf.GetBytesConsumed() - txOffset}}
 		txOffsets = append(txOffsets, idxInfo)
 	}
 	return data, txOffsets, nil
@@ -202,15 +193,15 @@ func extractMetadata(buf *ledgerutil.Buffer) (*common.BlockMetadata, error) {
 }
 
 func extractTxID(txEnvelopBytes []byte) (string, error) {
-	txEnvelope, err := utils.GetEnvelopeFromBlock(txEnvelopBytes)
+	txEnvelope, err := protoutil.GetEnvelopeFromBlock(txEnvelopBytes)
 	if err != nil {
 		return "", err
 	}
-	txPayload, err := utils.GetPayload(txEnvelope)
+	txPayload, err := protoutil.GetPayload(txEnvelope)
 	if err != nil {
 		return "", nil
 	}
-	chdr, err := utils.UnmarshalChannelHeader(txPayload.Header.ChannelHeader)
+	chdr, err := protoutil.UnmarshalChannelHeader(txPayload.Header.ChannelHeader)
 	if err != nil {
 		return "", err
 	}

@@ -24,16 +24,16 @@ import (
 
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/msp"
-	"github.com/hyperledger/fabric/protos/common"
 	mspproto "github.com/hyperledger/fabric/protos/msp"
+	"github.com/hyperledger/fabric/protoutil"
 )
 
 type MockChannelPolicyManagerGetter struct {
 	Managers map[string]policies.Manager
 }
 
-func (c *MockChannelPolicyManagerGetter) Manager(channelID string) (policies.Manager, bool) {
-	return c.Managers[channelID], true
+func (c *MockChannelPolicyManagerGetter) Manager(channelID string) policies.Manager {
+	return c.Managers[channelID]
 }
 
 type MockChannelPolicyManager struct {
@@ -53,7 +53,7 @@ type MockPolicy struct {
 }
 
 // Evaluate takes a set of SignedData and evaluates whether this set of signatures satisfies the policy
-func (m *MockPolicy) Evaluate(signatureSet []*common.SignedData) error {
+func (m *MockPolicy) Evaluate(signatureSet []*protoutil.SignedData) error {
 	fmt.Printf("Evaluate [%s], [% x], [% x]\n", string(signatureSet[0].Identity), string(signatureSet[0].Data), string(signatureSet[0].Signature))
 	identity, err := m.Deserializer.DeserializeIdentity(signatureSet[0].Identity)
 	if err != nil {
@@ -85,6 +85,10 @@ func (d *MockIdentityDeserializer) IsWellFormed(_ *mspproto.SerializedIdentity) 
 type MockIdentity struct {
 	identity []byte
 	msg      []byte
+}
+
+func (id *MockIdentity) Anonymous() bool {
+	panic("implement me")
 }
 
 func (id *MockIdentity) SatisfiesPrincipal(p *mspproto.MSPPrincipal) error {

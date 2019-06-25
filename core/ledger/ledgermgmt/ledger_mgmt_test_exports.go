@@ -1,55 +1,80 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+Copyright IBM Corp. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package ledgermgmt
 
 import (
+	"io/ioutil"
 	"os"
+	"testing"
 
-	"github.com/hyperledger/fabric/core/ledger/customtx"
-
-	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
-
-	"fmt"
+	"github.com/hyperledger/fabric/common/metrics/disabled"
+	"github.com/hyperledger/fabric/core/chaincode/platforms"
+	"github.com/hyperledger/fabric/core/chaincode/platforms/golang"
+	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/core/ledger/mock"
 )
 
+//TODO:  Remove all of these functions and create ledger provider instances
+
 // InitializeTestEnv initializes ledgermgmt for tests
-func InitializeTestEnv() {
-	remove()
-	initialize(nil)
-}
-
-// InitializeTestEnvWithCustomProcessors initializes ledgermgmt for tests with the supplied custom tx processors
-func InitializeTestEnvWithCustomProcessors(customTxProcessors customtx.Processors) {
-	remove()
-	customtx.InitializeTestEnv(customTxProcessors)
-	initialize(customTxProcessors)
-}
-
-// CleanupTestEnv closes the ledgermagmt and removes the store directory
-func CleanupTestEnv() {
-	Close()
-	remove()
-}
-
-func remove() {
-	path := ledgerconfig.GetRootPath()
-	fmt.Printf("removing dir = %s\n", path)
-	err := os.RemoveAll(path)
+func InitializeTestEnv(t *testing.T) (cleanup func()) {
+	cleanup, err := InitializeTestEnvWithInitializer(nil)
 	if err != nil {
-		logger.Errorf("Error: %s", err)
+		t.Fatalf("Failed to initialize test environment: %s", err)
 	}
+	return cleanup
+}
+
+// InitializeTestEnvWithInitializer initializes ledgermgmt for tests with the supplied Initializer
+func InitializeTestEnvWithInitializer(initializer *Initializer) (cleanup func(), err error) {
+	return InitializeExistingTestEnvWithInitializer(initializer)
+}
+
+// InitializeExistingTestEnvWithInitializer initializes ledgermgmt for tests with existing ledgers
+// This function does not remove the existing ledgers and is used in upgrade tests
+// TODO ledgermgmt should be reworked to move the package scoped functions to a struct
+func InitializeExistingTestEnvWithInitializer(initializer *Initializer) (cleanup func(), err error) {
+	if initializer == nil {
+		initializer = &Initializer{}
+	}
+	if initializer.DeployedChaincodeInfoProvider == nil {
+		initializer.DeployedChaincodeInfoProvider = &mock.DeployedChaincodeInfoProvider{}
+	}
+	if initializer.MetricsProvider == nil {
+		initializer.MetricsProvider = &disabled.Provider{}
+	}
+	if initializer.PlatformRegistry == nil {
+		initializer.PlatformRegistry = platforms.NewRegistry(&golang.Platform{})
+	}
+	if initializer.Config == nil {
+		rootPath, err := ioutil.TempDir("", "ltestenv")
+		if err != nil {
+			return nil, err
+		}
+		initializer.Config = &ledger.Config{
+			RootFSPath:    rootPath,
+			StateDBConfig: &ledger.StateDBConfig{},
+		}
+	}
+	if initializer.Config.PrivateDataConfig == nil {
+		initializer.Config.PrivateDataConfig = &ledger.PrivateDataConfig{
+			MaxBatchSize:    5000,
+			BatchesInterval: 1000,
+			PurgeInterval:   100,
+		}
+	}
+	if initializer.Config.HistoryDBConfig == nil {
+		initializer.Config.HistoryDBConfig = &ledger.HistoryDBConfig{
+			Enabled: true,
+		}
+	}
+	initialize(initializer)
+	cleanup = func() {
+		Close()
+		os.RemoveAll(initializer.Config.RootFSPath)
+	}
+	return cleanup, nil
 }

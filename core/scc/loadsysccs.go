@@ -12,9 +12,10 @@ import (
 	"plugin"
 	"sync"
 
-	"github.com/hyperledger/fabric/common/viperutil"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
+	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
+	"github.com/spf13/viper"
 )
 
 const (
@@ -34,13 +35,14 @@ var once sync.Once
 var sccPlugins []*SystemChaincode
 
 // loadSysCCs reads system chaincode plugin configuration and loads them
-func loadSysCCs() []*SystemChaincode {
+func loadSysCCs(p *Provider) []*SystemChaincode {
 	once.Do(func() {
 		var config []*PluginConfig
-		err := viperutil.EnhancedExactUnmarshalKey("chaincode.systemPlugins", &config)
+		err := mapstructure.Decode(viper.Get("chaincode.systemPlugins"), &config)
 		if err != nil {
-			panic(errors.WithMessage(err, "could not load YAML config"))
+			panic(errors.WithMessage(err, "could not decode system plugins configuration"))
 		}
+
 		loadSysCCsWithConfig(config)
 	})
 	return sccPlugins

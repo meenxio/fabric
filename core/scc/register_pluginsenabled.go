@@ -9,12 +9,11 @@ SPDX-License-Identifier: Apache-2.0
 
 package scc
 
-//RegisterSysCCs is the hook for system chaincodes where system chaincodes are registered with the fabric
-//note the chaincode must still be deployed and launched like a user chaincode will be
-func RegisterSysCCs() {
-	systemChaincodes = append(systemChaincodes, loadSysCCs()...)
-
-	for _, sysCC := range systemChaincodes {
-		registerSysCC(sysCC)
+// CreatePluginSysCCs creates all of the system chaincodes which are loaded by plugin
+func CreatePluginSysCCs(p *Provider) []SelfDescribingSysCC {
+	var sdscs []SelfDescribingSysCC
+	for _, pscc := range loadSysCCs(p) {
+		sdscs = append(sdscs, &SysCCWrapper{SCC: pscc})
 	}
+	return sdscs
 }

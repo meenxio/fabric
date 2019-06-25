@@ -4,7 +4,7 @@ Copyright IBM Corp. All Rights Reserved.
 SPDX-License-Identifier: Apache-2.0
 */
 
-package deliverclient
+package deliverservice
 
 import (
 	"context"
@@ -18,27 +18,31 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/deliverservice/blocksprovider"
+	"github.com/hyperledger/fabric/core/deliverservice/mocks"
+	"github.com/hyperledger/fabric/internal/pkg/identity"
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/orderer"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
 
+//go:generate counterfeiter -o mocks/signer_serializer.go --fake-name SignerSerializer . signerSerializer
+
+type signerSerializer interface {
+	identity.SignerSerializer
+}
+
 func TestTLSBinding(t *testing.T) {
 	defer ensureNoGoroutineLeak(t)()
-
-	requester := blocksRequester{
-		tls:     true,
-		chainID: "testchainid",
-	}
 
 	// Create an AtomicBroadcastServer
 	serverCert, serverKey, caCert := loadCertificates(t)
 	serverTLScert, err := tls.X509KeyPair(serverCert, serverKey)
 	assert.NoError(t, err)
-	comm.GetCredentialSupport().SetClientCertificate(serverTLScert)
+	cs := comm.NewCredentialSupport()
+	cs.SetClientCertificate(serverTLScert)
 	s, err := comm.NewGRPCServer("localhost:9435", comm.ServerConfig{
 		SecOpts: &comm.SecureOptions{
 			RequireClientCert: true,
@@ -50,10 +54,17 @@ func TestTLSBinding(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	orderer.RegisterAtomicBroadcastServer(s.Server(), &mockOrderer{})
+	orderer.RegisterAtomicBroadcastServer(s.Server(), &mockOrderer{t: t})
 	go s.Start()
 	defer s.Stop()
 	time.Sleep(time.Second * 3)
+
+	requester := blocksRequester{
+		tls:         true,
+		chainID:     "testchainid",
+		signer:      &mocks.SignerSerializer{},
+		credSupport: cs,
+	}
 
 	// Create deliver client and attempt to request block 100
 	// from the ordering service
@@ -135,7 +146,7 @@ func (o *mockOrderer) Deliver(stream orderer.AtomicBroadcast_DeliverServer) erro
 		if !isEnvelope || env == nil {
 			assert.Fail(o.t, "not an envelope")
 		}
-		ch, err := utils.ChannelHeader(env)
+		ch, err := protoutil.ChannelHeader(env)
 		assert.NoError(o.t, err)
 		return ch.TlsCertHash
 	})
