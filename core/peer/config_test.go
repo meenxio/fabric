@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -115,8 +116,10 @@ func TestConfiguration(t *testing.T) {
 func TestGetServerConfig(t *testing.T) {
 	// good config without TLS
 	viper.Set("peer.tls.enabled", false)
+	viper.Set("peer.connectiontimeout", "7s")
 	sc, _ := GetServerConfig()
 	assert.Equal(t, false, sc.SecOpts.UseTLS, "ServerConfig.SecOpts.UseTLS should be false")
+	assert.Equal(t, sc.ConnectionTimeout, 7*time.Second, "ServerConfig.ConnectionTimeout should be 7 seconds")
 
 	// keepalive options
 	assert.Equal(t, comm.DefaultKeepaliveOptions, sc.KaOpts, "ServerConfig.KaOpts should be set to default values")
@@ -229,6 +232,10 @@ func TestGetClientCertificate(t *testing.T) {
 
 func TestGlobalConfig(t *testing.T) {
 	defer viper.Reset()
+	cwd, err := os.Getwd()
+	assert.NoError(t, err, "failed to get current working directory")
+	viper.SetConfigFile(filepath.Join(cwd, "core.yaml"))
+
 	//Capture the configuration from viper
 	viper.Set("peer.addressAutoDetect", false)
 	viper.Set("peer.address", "localhost:8080")
@@ -254,13 +261,16 @@ func TestGlobalConfig(t *testing.T) {
 	viper.Set("vm.docker.tls.enabled", false)
 	viper.Set("vm.docker.attachStdout", false)
 	viper.Set("vm.docker.hostConfig.NetworkMode", "TestingHost")
+	viper.Set("vm.docker.tls.cert.file", "test/vm/tls/cert/file")
+	viper.Set("vm.docker.tls.key.file", "test/vm/tls/key/file")
+	viper.Set("vm.docker.tls.ca.file", "test/vm/tls/ca/file")
 
 	viper.Set("operations.listenAddress", "127.0.0.1:9443")
 	viper.Set("operations.tls.enabled", false)
 	viper.Set("operations.tls.cert.file", "test/tls/cert/file")
 	viper.Set("operations.tls.key.file", "test/tls/key/file")
 	viper.Set("operations.tls.clientAuthRequired", false)
-	viper.Set("operations.tls.clientRootCAs.files", []string{"file1, file2"})
+	viper.Set("operations.tls.clientRootCAs.files", []string{"relative/file1", "/absolute/file2"})
 
 	viper.Set("metrics.provider", "disabled")
 	viper.Set("metrics.statsd.network", "udp")
@@ -269,6 +279,16 @@ func TestGlobalConfig(t *testing.T) {
 	viper.Set("metrics.statsd.prefix", "testPrefix")
 
 	viper.Set("chaincode.pull", false)
+	viper.Set("chaincode.externalBuilders", &[]ExternalBuilder{
+		{
+			Path: "relative/plugin_dir",
+			Name: "relative",
+		},
+		{
+			Path: "/absolute/plugin_dir",
+			Name: "absolute",
+		},
+	})
 
 	coreConfig, err := GlobalConfig()
 	assert.NoError(t, err)
@@ -292,6 +312,7 @@ func TestGlobalConfig(t *testing.T) {
 		ChaincodeListenAddress:                "0.0.0.0:7052",
 		ChaincodeAddress:                      "0.0.0.0:7052",
 		ValidatorPoolSize:                     1,
+		DeliverClientKeepaliveOptions:         comm.DefaultKeepaliveOptions,
 
 		VMEndpoint:           "unix:///var/run/docker.sock",
 		VMDockerTLSEnabled:   false,
@@ -299,19 +320,35 @@ func TestGlobalConfig(t *testing.T) {
 		VMNetworkMode:        "TestingHost",
 
 		ChaincodePull: false,
-
+		ExternalBuilders: []ExternalBuilder{
+			{
+				Path: "relative/plugin_dir",
+				Name: "relative",
+			},
+			{
+				Path: "/absolute/plugin_dir",
+				Name: "absolute",
+			},
+		},
 		OperationsListenAddress:         "127.0.0.1:9443",
 		OperationsTLSEnabled:            false,
-		OperationsTLSCertFile:           "test/tls/cert/file",
-		OperationsTLSKeyFile:            "test/tls/key/file",
+		OperationsTLSCertFile:           filepath.Join(cwd, "test/tls/cert/file"),
+		OperationsTLSKeyFile:            filepath.Join(cwd, "test/tls/key/file"),
 		OperationsTLSClientAuthRequired: false,
-		OperationsTLSClientRootCAs:      []string{"file1, file2"},
+		OperationsTLSClientRootCAs: []string{
+			filepath.Join(cwd, "relative", "file1"),
+			"/absolute/file2",
+		},
 
 		MetricsProvider:     "disabled",
 		StatsdNetwork:       "udp",
 		StatsdAaddress:      "127.0.0.1:8125",
 		StatsdWriteInterval: 10 * time.Second,
 		StatsdPrefix:        "testPrefix",
+
+		DockerCert: filepath.Join(cwd, "test/vm/tls/cert/file"),
+		DockerKey:  filepath.Join(cwd, "test/vm/tls/key/file"),
+		DockerCA:   filepath.Join(cwd, "test/vm/tls/ca/file"),
 	}
 
 	assert.Equal(t, coreConfig, expectedConfig)
@@ -325,11 +362,36 @@ func TestGlobalConfigDefault(t *testing.T) {
 	assert.NoError(t, err)
 
 	expectedConfig := &Config{
-		AuthenticationTimeWindow: 15 * time.Minute,
-		PeerAddress:              "localhost:8080",
-		ValidatorPoolSize:        runtime.NumCPU(),
-		VMNetworkMode:            "host",
+		AuthenticationTimeWindow:      15 * time.Minute,
+		PeerAddress:                   "localhost:8080",
+		ValidatorPoolSize:             runtime.NumCPU(),
+		VMNetworkMode:                 "host",
+		DeliverClientKeepaliveOptions: comm.DefaultKeepaliveOptions,
 	}
 
 	assert.Equal(t, expectedConfig, coreConfig)
+}
+
+func TestMissingExternalBuilderPath(t *testing.T) {
+	defer viper.Reset()
+	viper.Set("peer.address", "localhost:8080")
+	viper.Set("chaincode.externalBuilders", &[]ExternalBuilder{
+		{
+			Name: "testName",
+		},
+	})
+	_, err := GlobalConfig()
+	assert.EqualError(t, err, "invalid external builder configuration, path attribute missing in one or more builders")
+}
+
+func TestMissingExternalBuilderName(t *testing.T) {
+	defer viper.Reset()
+	viper.Set("peer.address", "localhost:8080")
+	viper.Set("chaincode.externalBuilders", &[]ExternalBuilder{
+		{
+			Path: "relative/plugin_dir",
+		},
+	})
+	_, err := GlobalConfig()
+	assert.EqualError(t, err, "external builder at path relative/plugin_dir has no name attribute")
 }

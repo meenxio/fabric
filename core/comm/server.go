@@ -12,6 +12,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	"github.com/pkg/errors"
@@ -68,11 +69,7 @@ func NewGRPCServerFromListener(listener net.Listener, serverConfig ServerConfig)
 	//set up our server options
 	var serverOpts []grpc.ServerOption
 
-	//check SecOpts
-	var secureConfig SecureOptions
-	if serverConfig.SecOpts != nil {
-		secureConfig = *serverConfig.SecOpts
-	}
+	secureConfig := serverConfig.SecOpts
 	if secureConfig.UseTLS {
 		//both key and cert are required
 		if secureConfig.Key != nil && secureConfig.Certificate != nil {
@@ -97,6 +94,13 @@ func NewGRPCServerFromListener(listener net.Listener, serverConfig ServerConfig)
 				GetCertificate:         getCert,
 				SessionTicketsDisabled: true,
 				CipherSuites:           secureConfig.CipherSuites,
+			}
+
+			if serverConfig.SecOpts.TimeShift > 0 {
+				timeShift := serverConfig.SecOpts.TimeShift
+				grpcServer.tlsConfig.Time = func() time.Time {
+					return time.Now().Add((-1) * timeShift)
+				}
 			}
 			grpcServer.tlsConfig.ClientAuth = tls.RequestClientCert
 			//check if client authentication is required
@@ -149,9 +153,8 @@ func NewGRPCServerFromListener(listener net.Listener, serverConfig ServerConfig)
 		)
 	}
 
-	if serverConfig.MetricsProvider != nil {
-		sh := NewServerStatsHandler(serverConfig.MetricsProvider)
-		serverOpts = append(serverOpts, grpc.StatsHandler(sh))
+	if serverConfig.ServerStatsHandler != nil {
+		serverOpts = append(serverOpts, grpc.StatsHandler(serverConfig.ServerStatsHandler))
 	}
 
 	grpcServer.server = grpc.NewServer(serverOpts...)

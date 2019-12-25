@@ -19,12 +19,15 @@ import (
 	"time"
 
 	pb "github.com/golang/protobuf/proto"
+	pcomm "github.com/hyperledger/fabric-protos-go/common"
+	proto "github.com/hyperledger/fabric-protos-go/gossip"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset"
+	tspb "github.com/hyperledger/fabric-protos-go/transientstore"
 	"github.com/hyperledger/fabric/bccsp/factory"
 	"github.com/hyperledger/fabric/common/configtx/test"
 	errors2 "github.com/hyperledger/fabric/common/errors"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/metrics/disabled"
-	"github.com/hyperledger/fabric/common/util"
 	corecomm "github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/committer"
 	"github.com/hyperledger/fabric/core/committer/txvalidator"
@@ -40,14 +43,11 @@ import (
 	"github.com/hyperledger/fabric/gossip/gossip/channel"
 	"github.com/hyperledger/fabric/gossip/metrics"
 	"github.com/hyperledger/fabric/gossip/privdata"
+	capabilitymock "github.com/hyperledger/fabric/gossip/privdata/mocks"
 	"github.com/hyperledger/fabric/gossip/protoext"
 	"github.com/hyperledger/fabric/gossip/state/mocks"
 	gossiputil "github.com/hyperledger/fabric/gossip/util"
 	gutil "github.com/hyperledger/fabric/gossip/util"
-	pcomm "github.com/hyperledger/fabric/protos/common"
-	proto "github.com/hyperledger/fabric/protos/gossip"
-	"github.com/hyperledger/fabric/protos/ledger/rwset"
-	transientstore2 "github.com/hyperledger/fabric/protos/transientstore"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/onsi/gomega/gbytes"
 	"github.com/stretchr/testify/assert"
@@ -118,7 +118,7 @@ func (*cryptoServiceMock) GetPKIidOfCert(peerIdentity api.PeerIdentityType) comm
 
 // VerifyBlock returns nil if the block is properly signed,
 // else returns error
-func (*cryptoServiceMock) VerifyBlock(channelID common.ChannelID, seqNum uint64, signedBlock []byte) error {
+func (*cryptoServiceMock) VerifyBlock(channelID common.ChannelID, seqNum uint64, signedBlock *pcomm.Block) error {
 	return nil
 }
 
@@ -185,29 +185,6 @@ func (node *peerNode) shutdown() {
 	node.grpc.Stop()
 }
 
-type mockTransientStore struct {
-}
-
-func (*mockTransientStore) PurgeByHeight(maxBlockNumToRetain uint64) error {
-	return nil
-}
-
-func (*mockTransientStore) Persist(txid string, blockHeight uint64, privateSimulationResults *rwset.TxPvtReadWriteSet) error {
-	panic("implement me")
-}
-
-func (*mockTransientStore) PersistWithConfig(txid string, blockHeight uint64, privateSimulationResultsWithConfig *transientstore2.TxPvtReadWriteSetWithConfigInfo) error {
-	panic("implement me")
-}
-
-func (mockTransientStore) GetTxPvtRWSetByTxid(txid string, filter ledger.PvtNsCollFilter) (transientstore.RWSetScanner, error) {
-	panic("implement me")
-}
-
-func (*mockTransientStore) PurgeByTxids(txids []string) error {
-	panic("implement me")
-}
-
 type mockCommitter struct {
 	*mock.Mock
 	sync.Mutex
@@ -223,7 +200,7 @@ func (mc *mockCommitter) GetPvtDataByNum(blockNum uint64, filter ledger.PvtNsCol
 	return args.Get(0).([]*ledger.TxPvtData), args.Error(1)
 }
 
-func (mc *mockCommitter) CommitWithPvtData(blockAndPvtData *ledger.BlockAndPvtData) error {
+func (mc *mockCommitter) CommitLegacy(blockAndPvtData *ledger.BlockAndPvtData, commitOpts *ledger.CommitOptions) error {
 	mc.Lock()
 	m := mc.Mock
 	mc.Unlock()
@@ -247,6 +224,11 @@ func (mc *mockCommitter) LedgerHeight() (uint64, error) {
 	return args.Get(0).(uint64), args.Get(1).(error)
 }
 
+func (mc *mockCommitter) DoesPvtDataInfoExistInLedger(blkNum uint64) (bool, error) {
+	args := mc.Called(blkNum)
+	return args.Get(0).(bool), args.Error(1)
+}
+
 func (mc *mockCommitter) GetBlocks(blockSeqs []uint64) []*pcomm.Block {
 	if mc.Called(blockSeqs).Get(0) == nil {
 		return nil
@@ -258,7 +240,7 @@ func (*mockCommitter) GetMissingPvtDataTracker() (ledger.MissingPvtDataTracker, 
 	panic("implement me")
 }
 
-func (*mockCommitter) CommitPvtDataOfOldBlocks(blockPvtData []*ledger.BlockPvtData) ([]*ledger.PvtdataHashMismatch, error) {
+func (*mockCommitter) CommitPvtDataOfOldBlocks(reconciledPvtdata []*ledger.ReconciledPvtdata) ([]*ledger.PvtdataHashMismatch, error) {
 	panic("implement me")
 }
 
@@ -274,7 +256,7 @@ func (mock *ramLedger) GetMissingPvtDataTracker() (ledger.MissingPvtDataTracker,
 	panic("implement me")
 }
 
-func (mock *ramLedger) CommitPvtDataOfOldBlocks(blockPvtData []*ledger.BlockPvtData) ([]*ledger.PvtdataHashMismatch, error) {
+func (mock *ramLedger) CommitPvtDataOfOldBlocks(reconciledPvtdata []*ledger.ReconciledPvtdata) ([]*ledger.PvtdataHashMismatch, error) {
 	panic("implement me")
 }
 
@@ -297,7 +279,7 @@ func (mock *ramLedger) GetPvtDataByNum(blockNum uint64, filter ledger.PvtNsCollF
 	panic("implement me")
 }
 
-func (mock *ramLedger) CommitWithPvtData(blockAndPvtdata *ledger.BlockAndPvtData) error {
+func (mock *ramLedger) CommitLegacy(blockAndPvtdata *ledger.BlockAndPvtData, commitOpts *ledger.CommitOptions) error {
 	mock.Lock()
 	defer mock.Unlock()
 
@@ -318,6 +300,10 @@ func (mock *ramLedger) GetBlockchainInfo() (*pcomm.BlockchainInfo, error) {
 		CurrentBlockHash:  protoutil.BlockHeaderHash(currentBlock.Header),
 		PreviousBlockHash: currentBlock.Header.PreviousHash,
 	}, nil
+}
+
+func (mock *ramLedger) DoesPvtDataInfoExist(blkNum uint64) (bool, error) {
+	return false, nil
 }
 
 func (mock *ramLedger) GetBlockByNumber(blockNumber uint64) (*pcomm.Block, error) {
@@ -341,9 +327,7 @@ func newCommitter() committer.Committer {
 	ldgr := &ramLedger{
 		ledger: make(map[uint64]*ledger.BlockAndPvtData),
 	}
-	ldgr.CommitWithPvtData(&ledger.BlockAndPvtData{
-		Block: cb,
-	})
+	ldgr.CommitLegacy(&ledger.BlockAndPvtData{Block: cb}, &ledger.CommitOptions{})
 	return committer.NewLedgerCommitter(ldgr)
 }
 
@@ -396,7 +380,7 @@ func newPeerNodeWithGossipWithValidatorWithMetrics(id int, committer committer.C
 		g = gossip.New(config, gRPCServer.Server(), &orgCryptoService{}, mcs, selfID, secureDialOpts, gossipMetrics)
 	}
 
-	g.JoinChan(&joinChanMsg{}, common.ChannelID(util.GetTestChainID()))
+	g.JoinChan(&joinChanMsg{}, common.ChannelID("testchannelid"))
 
 	go func() {
 		gRPCServer.Start()
@@ -407,14 +391,19 @@ func newPeerNodeWithGossipWithValidatorWithMetrics(id int, committer committer.C
 
 	servicesAdapater := &ServicesMediator{GossipAdapter: g, MCSAdapter: cs}
 	coordConfig := privdata.CoordinatorConfig{
-		PullRetryThreshold:      0,
-		TransientBlockRetention: 1000,
+		PullRetryThreshold:             0,
+		TransientBlockRetention:        1000,
+		SkipPullingInvalidTransactions: false,
 	}
+	capabilityProvider := &capabilitymock.CapabilityProvider{}
+	appCapability := &capabilitymock.AppCapabilities{}
+	capabilityProvider.On("Capabilities").Return(appCapability)
+	appCapability.On("StorePvtDataOfInvalidTx").Return(true)
 	coord := privdata.NewCoordinator(privdata.Support{
-		Validator:      v,
-		TransientStore: &mockTransientStore{},
-		Committer:      committer,
-	}, protoutil.SignedData{}, gossipMetrics.PrivdataMetrics, coordConfig)
+		Validator:          v,
+		Committer:          committer,
+		CapabilityProvider: capabilityProvider,
+	}, &transientstore.Store{}, protoutil.SignedData{}, gossipMetrics.PrivdataMetrics, coordConfig, nil)
 	stateConfig := &StateConfig{
 		StateCheckInterval:   DefStateCheckInterval,
 		StateResponseTimeout: DefStateResponseTimeout,
@@ -424,7 +413,7 @@ func newPeerNodeWithGossipWithValidatorWithMetrics(id int, committer committer.C
 		StateChannelSize:     DefStateChannelSize,
 		StateEnabled:         DefStateEnabled,
 	}
-	sp := NewGossipStateProvider(util.GetTestChainID(), servicesAdapater, coord, gossipMetrics.StateMetrics, blocking, stateConfig)
+	sp := NewGossipStateProvider("testchannelid", servicesAdapater, coord, gossipMetrics.StateMetrics, blocking, stateConfig)
 	if sp == nil {
 		gRPCServer.Stop()
 		return nil, port
@@ -536,11 +525,12 @@ func TestLargeBlockGap(t *testing.T) {
 	t.Parallel()
 	mc := &mockCommitter{Mock: &mock.Mock{}}
 	blocksPassedToLedger := make(chan uint64, 200)
-	mc.On("CommitWithPvtData", mock.Anything).Run(func(arg mock.Arguments) {
+	mc.On("CommitLegacy", mock.Anything).Run(func(arg mock.Arguments) {
 		blocksPassedToLedger <- arg.Get(0).(*pcomm.Block).Header.Number
 	})
 	msgsFromPeer := make(chan protoext.ReceivedMessage)
 	mc.On("LedgerHeight", mock.Anything).Return(uint64(1), nil)
+	mc.On("DoesPvtDataInfoExistInLedger", mock.Anything).Return(false, nil)
 	g := &mocks.GossipMock{}
 	membership := []discovery.NetworkMember{
 		{
@@ -560,7 +550,7 @@ func TestLargeBlockGap(t *testing.T) {
 		// Construct a skeleton for the response
 		res := &proto.GossipMessage{
 			Nonce:   msg.Nonce,
-			Channel: []byte(util.GetTestChainID()),
+			Channel: []byte("testchannelid"),
 			Content: &proto.GossipMessage_StateResponse{
 				StateResponse: &proto.RemoteStateResponse{},
 			},
@@ -607,10 +597,11 @@ func TestOverPopulation(t *testing.T) {
 	t.Parallel()
 	mc := &mockCommitter{Mock: &mock.Mock{}}
 	blocksPassedToLedger := make(chan uint64, 10)
-	mc.On("CommitWithPvtData", mock.Anything).Run(func(arg mock.Arguments) {
+	mc.On("CommitLegacy", mock.Anything).Run(func(arg mock.Arguments) {
 		blocksPassedToLedger <- arg.Get(0).(*pcomm.Block).Header.Number
 	})
 	mc.On("LedgerHeight", mock.Anything).Return(uint64(1), nil)
+	mc.On("DoesPvtDataInfoExistInLedger", mock.Anything).Return(false, nil)
 	g := &mocks.GossipMock{}
 	g.On("Accept", mock.Anything, false).Return(make(<-chan *proto.GossipMessage), nil)
 	g.On("Accept", mock.Anything, true).Return(nil, make(chan protoext.ReceivedMessage))
@@ -670,10 +661,11 @@ func TestBlockingEnqueue(t *testing.T) {
 	t.Parallel()
 	mc := &mockCommitter{Mock: &mock.Mock{}}
 	blocksPassedToLedger := make(chan uint64, 10)
-	mc.On("CommitWithPvtData", mock.Anything).Run(func(arg mock.Arguments) {
+	mc.On("CommitLegacy", mock.Anything).Run(func(arg mock.Arguments) {
 		blocksPassedToLedger <- arg.Get(0).(*pcomm.Block).Header.Number
 	})
 	mc.On("LedgerHeight", mock.Anything).Return(uint64(1), nil)
+	mc.On("DoesPvtDataInfoExistInLedger", mock.Anything).Return(false, nil)
 	g := &mocks.GossipMock{}
 	g.On("Accept", mock.Anything, false).Return(make(<-chan *proto.GossipMessage), nil)
 	g.On("Accept", mock.Anything, true).Return(nil, make(chan protoext.ReceivedMessage))
@@ -717,7 +709,8 @@ func TestBlockingEnqueue(t *testing.T) {
 		receivedBlockCount++
 		m := &mock.Mock{}
 		m.On("LedgerHeight", mock.Anything).Return(receivedBlock, nil)
-		m.On("CommitWithPvtData", mock.Anything).Run(func(arg mock.Arguments) {
+		m.On("DoesPvtDataInfoExistInLedger", mock.Anything).Return(false, nil)
+		m.On("CommitLegacy", mock.Anything).Run(func(arg mock.Arguments) {
 			blocksPassedToLedger <- arg.Get(0).(*pcomm.Block).Header.Number
 		})
 		mc.Lock()
@@ -754,7 +747,7 @@ func TestHaltChainProcessing(t *testing.T) {
 	}
 	newBlockMsg := func(i int) *proto.GossipMessage {
 		return &proto.GossipMessage{
-			Channel: []byte("testchainid"),
+			Channel: []byte("testchannelid"),
 			Content: &proto.GossipMessage_DataMsg{
 				DataMsg: &proto.DataMessage{
 					Payload: &proto.Payload{
@@ -778,7 +771,7 @@ func TestHaltChainProcessing(t *testing.T) {
 	logger = l
 
 	mc := &mockCommitter{Mock: &mock.Mock{}}
-	mc.On("CommitWithPvtData", mock.Anything)
+	mc.On("CommitLegacy", mock.Anything)
 	mc.On("LedgerHeight", mock.Anything).Return(uint64(1), nil)
 	g := &mocks.GossipMock{}
 	gossipMsgs := make(chan *proto.GossipMessage)
@@ -860,7 +853,7 @@ func TestGossipReception(t *testing.T) {
 			// Simulate a message reception from the gossip component with an invalid channel
 			c <- newMsg("AAA")
 			// Simulate a message reception from the gossip component
-			c <- newMsg(util.GetTestChainID())
+			c <- newMsg("testchannelid")
 		}(c)
 		return c
 	}
@@ -874,12 +867,13 @@ func TestGossipReception(t *testing.T) {
 	g.On("PeersOfChannel", mock.Anything).Return([]discovery.NetworkMember{})
 	mc := &mockCommitter{Mock: &mock.Mock{}}
 	receivedChan := make(chan struct{})
-	mc.On("CommitWithPvtData", mock.Anything).Run(func(arguments mock.Arguments) {
+	mc.On("CommitLegacy", mock.Anything).Run(func(arguments mock.Arguments) {
 		block := arguments.Get(0).(*pcomm.Block)
 		assert.Equal(t, uint64(1), block.Header.Number)
 		receivedChan <- struct{}{}
 	})
 	mc.On("LedgerHeight", mock.Anything).Return(uint64(1), nil)
+	mc.On("DoesPvtDataInfoExistInLedger", mock.Anything).Return(false, nil)
 	p := newPeerNodeWithGossip(0, mc, noopPeerIdentityAcceptor, g)
 	defer p.shutdown()
 	select {
@@ -1050,7 +1044,7 @@ func TestAccessControl(t *testing.T) {
 
 	waitUntilTrueOrTimeout(t, func() bool {
 		for _, p := range peersSet {
-			if len(p.g.PeersOfChannel(common.ChannelID(util.GetTestChainID()))) != bootstrapSetSize+standardPeerSetSize-1 {
+			if len(p.g.PeersOfChannel(common.ChannelID("testchannelid"))) != bootstrapSetSize+standardPeerSetSize-1 {
 				t.Log("Peer discovery has not finished yet")
 				return false
 			}
@@ -1131,7 +1125,7 @@ func TestNewGossipStateProvider_SendingManyMessages(t *testing.T) {
 
 	waitUntilTrueOrTimeout(t, func() bool {
 		for _, p := range peersSet {
-			if len(p.g.PeersOfChannel(common.ChannelID(util.GetTestChainID()))) != bootstrapSetSize+standartPeersSize-1 {
+			if len(p.g.PeersOfChannel(common.ChannelID("testchannelid"))) != bootstrapSetSize+standartPeersSize-1 {
 				t.Log("Peer discovery has not finished yet")
 				return false
 			}
@@ -1204,7 +1198,7 @@ func TestNewGossipStateProvider_BatchingOfStateRequest(t *testing.T) {
 	// Once we got message which indicate of two batches being received,
 	// making sure messages indeed committed.
 	waitUntilTrueOrTimeout(t, func() bool {
-		if len(peer.g.PeersOfChannel(common.ChannelID(util.GetTestChainID()))) != 1 {
+		if len(peer.g.PeersOfChannel(common.ChannelID("testchannelid"))) != 1 {
 			t.Log("Peer discovery has not finished yet")
 			return false
 		}
@@ -1260,7 +1254,7 @@ func (mock *coordinatorMock) Close() {
 }
 
 // StorePvtData used to persist private date into transient store
-func (mock *coordinatorMock) StorePvtData(txid string, privData *transientstore2.TxPvtReadWriteSetWithConfigInfo, blkHeight uint64) error {
+func (mock *coordinatorMock) StorePvtData(txid string, privData *tspb.TxPvtReadWriteSetWithConfigInfo, blkHeight uint64) error {
 	return mock.Called().Error(0)
 }
 
@@ -1556,6 +1550,9 @@ func TestTransferOfPvtDataBetweenPeers(t *testing.T) {
 
 	// Second peer has a gap of one block, hence it will have to replicate it from previous
 	peers["peer2"].coord.On("LedgerHeight", mock.Anything).Return(uint64(2), nil)
+
+	peers["peer1"].coord.On("DoesPvtDataInfoExistInLedger", mock.Anything).Return(false, nil)
+	peers["peer2"].coord.On("DoesPvtDataInfoExistInLedger", mock.Anything).Return(false, nil)
 
 	peers["peer1"].coord.On("GetPvtDataAndBlockByNum", uint64(2)).Return(&pcomm.Block{
 		Header: &pcomm.BlockHeader{

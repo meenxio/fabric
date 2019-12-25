@@ -12,7 +12,6 @@ import (
 	coreconfig "github.com/hyperledger/fabric/core/config"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/util/couchdb"
-
 	"github.com/spf13/viper"
 )
 
@@ -73,6 +72,7 @@ func ledgerConfig() *ledger.Config {
 			WarmIndexesAfterNBlocks: warmAfterNBlocks,
 			CreateGlobalChangesDB:   viper.GetBool("ledger.state.couchDBConfig.createGlobalChangesDB"),
 			RedoLogPath:             filepath.Join(rootFSPath, "couchdbRedoLogs"),
+			UserCacheSizeMBs:        viper.GetInt("ledger.state.couchDBConfig.cacheSize"),
 		}
 	}
 	return conf

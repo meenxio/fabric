@@ -9,16 +9,22 @@ package service
 import (
 	"bytes"
 	"fmt"
+	"io/ioutil"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/peer"
+	transientstore2 "github.com/hyperledger/fabric-protos-go/transientstore"
+	"github.com/hyperledger/fabric/bccsp/sw"
 	"github.com/hyperledger/fabric/common/channelconfig"
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/metrics/disabled"
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/deliverservice"
-	"github.com/hyperledger/fabric/core/deliverservice/blocksprovider"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/transientstore"
 	"github.com/hyperledger/fabric/gossip/api"
@@ -30,18 +36,18 @@ import (
 	"github.com/hyperledger/fabric/gossip/gossip/algo"
 	"github.com/hyperledger/fabric/gossip/gossip/channel"
 	gossipmetrics "github.com/hyperledger/fabric/gossip/metrics"
+	"github.com/hyperledger/fabric/gossip/privdata"
 	"github.com/hyperledger/fabric/gossip/state"
 	"github.com/hyperledger/fabric/gossip/util"
 	peergossip "github.com/hyperledger/fabric/internal/peer/gossip"
 	"github.com/hyperledger/fabric/internal/peer/gossip/mocks"
 	"github.com/hyperledger/fabric/internal/pkg/identity"
+	"github.com/hyperledger/fabric/internal/pkg/peer/blocksprovider"
+	"github.com/hyperledger/fabric/internal/pkg/peer/orderers"
 	"github.com/hyperledger/fabric/msp/mgmt"
 	msptesttools "github.com/hyperledger/fabric/msp/mgmt/testtools"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/ledger/rwset"
-	"github.com/hyperledger/fabric/protos/peer"
-	transientstore2 "github.com/hyperledger/fabric/protos/transientstore"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 )
 
@@ -55,48 +61,81 @@ type signerSerializer interface {
 	identity.SignerSerializer
 }
 
-type mockTransientStore struct {
+type testTransientStore struct {
+	storeProvider transientstore.StoreProvider
+	Store         *transientstore.Store
+	tempdir       string
 }
 
-func (*mockTransientStore) PurgeByHeight(maxBlockNumToRetain uint64) error {
-	return nil
+func newTransientStore(t *testing.T) *testTransientStore {
+	s := &testTransientStore{}
+	var err error
+	s.tempdir, err = ioutil.TempDir("", "ts")
+	if err != nil {
+		t.Fatalf("Failed to create test directory, got err %s", err)
+		return s
+	}
+	s.storeProvider, err = transientstore.NewStoreProvider(s.tempdir)
+	if err != nil {
+		t.Fatalf("Failed to open store, got err %s", err)
+		return s
+	}
+	s.Store, err = s.storeProvider.OpenStore("test")
+	if err != nil {
+		t.Fatalf("Failed to open store, got err %s", err)
+		return s
+	}
+	return s
 }
 
-func (*mockTransientStore) Persist(txid string, blockHeight uint64, privateSimulationResults *rwset.TxPvtReadWriteSet) error {
-	panic("implement me")
+func (s *testTransientStore) tearDown() {
+	s.storeProvider.Close()
+	os.RemoveAll(s.tempdir)
 }
 
-func (*mockTransientStore) PersistWithConfig(txid string, blockHeight uint64, privateSimulationResultsWithConfig *transientstore2.TxPvtReadWriteSetWithConfigInfo) error {
-	panic("implement me")
+func (s *testTransientStore) Persist(txid string, blockHeight uint64,
+	privateSimulationResultsWithConfig *transientstore2.TxPvtReadWriteSetWithConfigInfo) error {
+	return s.Store.Persist(txid, blockHeight, privateSimulationResultsWithConfig)
 }
 
-func (*mockTransientStore) GetTxPvtRWSetByTxid(txid string, filter ledger.PvtNsCollFilter) (transientstore.RWSetScanner, error) {
-	panic("implement me")
-}
-
-func (*mockTransientStore) PurgeByTxids(txids []string) error {
-	panic("implement me")
+func (s *testTransientStore) GetTxPvtRWSetByTxid(txid string, filter ledger.PvtNsCollFilter) (privdata.RWSetScanner, error) {
+	return s.Store.GetTxPvtRWSetByTxid(txid, filter)
 }
 
 func TestInitGossipService(t *testing.T) {
 	grpcServer := grpc.NewServer()
 	endpoint, socket := getAvailablePort(t)
 
-	msptesttools.LoadMSPSetupForTesting()
-	signer := mgmt.GetLocalSigningIdentityOrPanic()
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
 
-	messageCryptoService := peergossip.NewMCS(&mocks.ChannelPolicyManagerGetter{}, signer, mgmt.NewDeserializersManager())
-	secAdv := peergossip.NewSecurityAdvisor(mgmt.NewDeserializersManager())
+	msptesttools.LoadMSPSetupForTesting()
+	signer := mgmt.GetLocalSigningIdentityOrPanic(cryptoProvider)
+
+	messageCryptoService := peergossip.NewMCS(&mocks.ChannelPolicyManagerGetter{}, signer, mgmt.NewDeserializersManager(cryptoProvider), cryptoProvider)
+	secAdv := peergossip.NewSecurityAdvisor(mgmt.NewDeserializersManager(cryptoProvider))
+	gossipConfig, err := gossip.GlobalConfig(endpoint, nil)
+	assert.NoError(t, err)
+
+	grpcClient, err := comm.NewGRPCClient(comm.ClientConfig{})
+	require.NoError(t, err)
+
 	gossipService, err := New(
 		signer,
 		gossipmetrics.NewGossipMetrics(&disabled.Provider{}),
 		endpoint,
 		grpcServer,
-		nil,
 		messageCryptoService,
 		secAdv,
 		nil,
 		comm.NewCredentialSupport(),
+		grpcClient,
+		gossipConfig,
+		&ServiceConfig{},
+		&deliverservice.DeliverServiceConfig{
+			ReConnectBackoffThreshold:   deliverservice.DefaultReConnectBackoffThreshold,
+			ReconnectTotalTimeThreshold: deliverservice.DefaultReConnectTotalTimeThreshold,
+		},
 	)
 	assert.NoError(t, err)
 
@@ -141,6 +180,9 @@ func TestLeaderElectionWithDeliverClient(t *testing.T) {
 
 	services := make([]*electionService, n)
 
+	store := newTransientStore(t)
+	defer store.tearDown()
+
 	for i := 0; i < n; i++ {
 		deliverServiceFactory := &mockDeliverServiceFactory{
 			service: &mockDeliverService{
@@ -150,8 +192,7 @@ func TestLeaderElectionWithDeliverClient(t *testing.T) {
 		gossips[i].deliveryFactory = deliverServiceFactory
 		deliverServiceFactory.service.running[channelName] = false
 
-		gossips[i].InitializeChannel(channelName, []string{"endpoint"}, Support{
-			Store:     &mockTransientStore{},
+		gossips[i].InitializeChannel(channelName, orderers.NewConnectionSource(flogging.MustGetLogger("peer.orderers"), nil), store.Store, Support{
 			Committer: &mockLedgerInfo{1},
 		})
 		service, exist := gossips[i].leaderElection[channelName]
@@ -177,11 +218,11 @@ func TestLeaderElectionWithDeliverClient(t *testing.T) {
 }
 
 func TestWithStaticDeliverClientLeader(t *testing.T) {
-	//Tests check if static leader flag works ok.
-	//Leader election flag set to false, and static leader flag set to true
-	//Two gossip service instances (peers) created.
-	//Each peer is added to channel and should run mock delivery client
-	//After that each peer added to another client and it should run deliver client for this channel as well.
+	// Tests check if static leader flag works ok.
+	// Leader election flag set to false, and static leader flag set to true
+	// Two gossip service instances (peers) created.
+	// Each peer is added to channel and should run mock delivery client
+	// After that each peer added to another client and it should run deliver client for this channel as well.
 
 	serviceConfig := &ServiceConfig{
 		UseLeaderElection:                false,
@@ -203,6 +244,9 @@ func TestWithStaticDeliverClientLeader(t *testing.T) {
 
 	waitForFullMembershipOrFailNow(t, channelName, gossips, n, time.Second*30, time.Second*2)
 
+	store := newTransientStore(t)
+	defer store.tearDown()
+
 	deliverServiceFactory := &mockDeliverServiceFactory{
 		service: &mockDeliverService{
 			running: make(map[string]bool),
@@ -212,9 +256,8 @@ func TestWithStaticDeliverClientLeader(t *testing.T) {
 	for i := 0; i < n; i++ {
 		gossips[i].deliveryFactory = deliverServiceFactory
 		deliverServiceFactory.service.running[channelName] = false
-		gossips[i].InitializeChannel(channelName, []string{"endpoint"}, Support{
+		gossips[i].InitializeChannel(channelName, orderers.NewConnectionSource(flogging.MustGetLogger("peer.orderers"), nil), store.Store, Support{
 			Committer: &mockLedgerInfo{1},
-			Store:     &mockTransientStore{},
 		})
 	}
 
@@ -226,9 +269,8 @@ func TestWithStaticDeliverClientLeader(t *testing.T) {
 	channelName = "chanB"
 	for i := 0; i < n; i++ {
 		deliverServiceFactory.service.running[channelName] = false
-		gossips[i].InitializeChannel(channelName, []string{"endpoint"}, Support{
+		gossips[i].InitializeChannel(channelName, orderers.NewConnectionSource(flogging.MustGetLogger("peer.orderers"), nil), store.Store, Support{
 			Committer: &mockLedgerInfo{1},
-			Store:     &mockTransientStore{},
 		})
 	}
 
@@ -263,6 +305,9 @@ func TestWithStaticDeliverClientNotLeader(t *testing.T) {
 
 	waitForFullMembershipOrFailNow(t, channelName, gossips, n, time.Second*30, time.Second*2)
 
+	store := newTransientStore(t)
+	defer store.tearDown()
+
 	deliverServiceFactory := &mockDeliverServiceFactory{
 		service: &mockDeliverService{
 			running: make(map[string]bool),
@@ -272,9 +317,8 @@ func TestWithStaticDeliverClientNotLeader(t *testing.T) {
 	for i := 0; i < n; i++ {
 		gossips[i].deliveryFactory = deliverServiceFactory
 		deliverServiceFactory.service.running[channelName] = false
-		gossips[i].InitializeChannel(channelName, []string{"endpoint"}, Support{
+		gossips[i].InitializeChannel(channelName, orderers.NewConnectionSource(flogging.MustGetLogger("peer.orderers"), nil), store.Store, Support{
 			Committer: &mockLedgerInfo{1},
-			Store:     &mockTransientStore{},
 		})
 	}
 
@@ -309,6 +353,9 @@ func TestWithStaticDeliverClientBothStaticAndLeaderElection(t *testing.T) {
 
 	waitForFullMembershipOrFailNow(t, channelName, gossips, n, time.Second*30, time.Second*2)
 
+	store := newTransientStore(t)
+	defer store.tearDown()
+
 	deliverServiceFactory := &mockDeliverServiceFactory{
 		service: &mockDeliverService{
 			running: make(map[string]bool),
@@ -318,9 +365,8 @@ func TestWithStaticDeliverClientBothStaticAndLeaderElection(t *testing.T) {
 	for i := 0; i < n; i++ {
 		gossips[i].deliveryFactory = deliverServiceFactory
 		assert.Panics(t, func() {
-			gossips[i].InitializeChannel(channelName, []string{"endpoint"}, Support{
+			gossips[i].InitializeChannel(channelName, orderers.NewConnectionSource(flogging.MustGetLogger("peer.orderers"), nil), store.Store, Support{
 				Committer: &mockLedgerInfo{1},
-				Store:     &mockTransientStore{},
 			})
 		}, "Dynamic leader election based and static connection to ordering service can't exist simultaneously")
 	}
@@ -332,16 +378,12 @@ type mockDeliverServiceFactory struct {
 	service *mockDeliverService
 }
 
-func (mf *mockDeliverServiceFactory) Service(g GossipServiceAdapter, endpoints []string, mcs api.MessageCryptoService) (deliverservice.DeliverService, error) {
-	return mf.service, nil
+func (mf *mockDeliverServiceFactory) Service(GossipServiceAdapter, *orderers.ConnectionSource, api.MessageCryptoService) deliverservice.DeliverService {
+	return mf.service
 }
 
 type mockDeliverService struct {
 	running map[string]bool
-}
-
-func (ds *mockDeliverService) UpdateEndpoints(chainID string, endpoints []string) error {
-	panic("implement me")
 }
 
 func (ds *mockDeliverService) StartDeliverForChannel(chainID string, ledgerInfo blocksprovider.LedgerInfo, finalizer func()) error {
@@ -373,11 +415,11 @@ func (li *mockLedgerInfo) GetPvtDataByNum(blockNum uint64, filter ledger.PvtNsCo
 	panic("implement me")
 }
 
-func (li *mockLedgerInfo) CommitWithPvtData(blockAndPvtData *ledger.BlockAndPvtData) error {
+func (li *mockLedgerInfo) CommitLegacy(blockAndPvtData *ledger.BlockAndPvtData, commitOpts *ledger.CommitOptions) error {
 	panic("implement me")
 }
 
-func (li *mockLedgerInfo) CommitPvtDataOfOldBlocks(blockPvtData []*ledger.BlockPvtData) ([]*ledger.PvtdataHashMismatch, error) {
+func (li *mockLedgerInfo) CommitPvtDataOfOldBlocks(reconciledPvtdata []*ledger.ReconciledPvtdata) ([]*ledger.PvtdataHashMismatch, error) {
 	panic("implement me")
 }
 
@@ -388,6 +430,10 @@ func (li *mockLedgerInfo) GetPvtDataAndBlockByNum(seqNum uint64) (*ledger.BlockA
 // LedgerHeight returns mocked value to the ledger height
 func (li *mockLedgerInfo) LedgerHeight() (uint64, error) {
 	return li.Height, nil
+}
+
+func (li *mockLedgerInfo) DoesPvtDataInfoExistInLedger(blkNum uint64) (bool, error) {
+	return false, nil
 }
 
 // Commit block to the ledger
@@ -833,7 +879,7 @@ func (*naiveCryptoService) GetPKIidOfCert(peerIdentity api.PeerIdentityType) gos
 
 // VerifyBlock returns nil if the block is properly signed,
 // else returns error
-func (*naiveCryptoService) VerifyBlock(chainID gossipcommon.ChannelID, seqNum uint64, signedBlock []byte) error {
+func (*naiveCryptoService) VerifyBlock(chainID gossipcommon.ChannelID, seqNum uint64, signedBlock *common.Block) error {
 	return nil
 }
 
@@ -860,20 +906,35 @@ func TestInvalidInitialization(t *testing.T) {
 	grpcServer := grpc.NewServer()
 	endpoint, socket := getAvailablePort(t)
 
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+
 	mockSignerSerializer := &mocks.SignerSerializer{}
 	mockSignerSerializer.SerializeReturns(api.PeerIdentityType("peer-identity"), nil)
-	secAdv := peergossip.NewSecurityAdvisor(mgmt.NewDeserializersManager())
+	secAdv := peergossip.NewSecurityAdvisor(mgmt.NewDeserializersManager(cryptoProvider))
+	gossipConfig, err := gossip.GlobalConfig(endpoint, nil)
+	assert.NoError(t, err)
+
+	grpcClient, err := comm.NewGRPCClient(comm.ClientConfig{})
+	require.NoError(t, err)
 
 	gossipService, err := New(
 		mockSignerSerializer,
 		gossipmetrics.NewGossipMetrics(&disabled.Provider{}),
 		endpoint,
 		grpcServer,
-		nil,
 		&naiveCryptoService{},
 		secAdv,
 		nil,
 		comm.NewCredentialSupport(),
+		grpcClient,
+		gossipConfig,
+		&ServiceConfig{},
+		&deliverservice.DeliverServiceConfig{
+			PeerTLSEnabled:              false,
+			ReConnectBackoffThreshold:   deliverservice.DefaultReConnectBackoffThreshold,
+			ReconnectTotalTimeThreshold: deliverservice.DefaultReConnectTotalTimeThreshold,
+		},
 	)
 	assert.NoError(t, err)
 	gService := gossipService
@@ -882,16 +943,8 @@ func TestInvalidInitialization(t *testing.T) {
 	go grpcServer.Serve(socket)
 	defer grpcServer.Stop()
 
-	dc, err := gService.deliveryFactory.Service(gService, []string{}, &naiveCryptoService{})
-	assert.EqualError(t, err, "no endpoints specified")
-	assert.Nil(t, dc)
-
-	endpoint2, socket2 := getAvailablePort(t)
-	defer socket2.Close()
-
-	dc, err = gService.deliveryFactory.Service(gService, []string{endpoint2}, &naiveCryptoService{})
+	dc := gService.deliveryFactory.Service(gService, orderers.NewConnectionSource(flogging.MustGetLogger("peer.orderers"), nil), &naiveCryptoService{})
 	assert.NotNil(t, dc)
-	assert.NoError(t, err)
 }
 
 func TestChannelConfig(t *testing.T) {
@@ -899,20 +952,33 @@ func TestChannelConfig(t *testing.T) {
 	grpcServer := grpc.NewServer()
 	endpoint, socket := getAvailablePort(t)
 
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+
 	mockSignerSerializer := &mocks.SignerSerializer{}
 	mockSignerSerializer.SerializeReturns(api.PeerIdentityType("peer-identity"), nil)
-	secAdv := peergossip.NewSecurityAdvisor(mgmt.NewDeserializersManager())
+	secAdv := peergossip.NewSecurityAdvisor(mgmt.NewDeserializersManager(cryptoProvider))
+	gossipConfig, err := gossip.GlobalConfig(endpoint, nil)
+	assert.NoError(t, err)
+
+	grpcClient, err := comm.NewGRPCClient(comm.ClientConfig{})
 
 	gossipService, err := New(
 		mockSignerSerializer,
 		gossipmetrics.NewGossipMetrics(&disabled.Provider{}),
 		endpoint,
 		grpcServer,
-		nil,
 		&naiveCryptoService{},
 		secAdv,
 		nil,
 		nil,
+		grpcClient,
+		gossipConfig,
+		&ServiceConfig{},
+		&deliverservice.DeliverServiceConfig{
+			ReConnectBackoffThreshold:   deliverservice.DefaultReConnectBackoffThreshold,
+			ReconnectTotalTimeThreshold: deliverservice.DefaultReConnectTotalTimeThreshold,
+		},
 	)
 	assert.NoError(t, err)
 	gService := gossipService
@@ -939,4 +1005,17 @@ func TestChannelConfig(t *testing.T) {
 	gService.JoinChan(jcm, gossipcommon.ChannelID("A"))
 	gService.updateAnchors(mc)
 	assert.True(t, gService.amIinChannel(string(orgInChannelA), mc))
+}
+
+func defaultDeliverClientDialOpts() []grpc.DialOption {
+	dialOpts := []grpc.DialOption{grpc.WithBlock()}
+	dialOpts = append(
+		dialOpts,
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(comm.MaxRecvMsgSize),
+			grpc.MaxCallSendMsgSize(comm.MaxSendMsgSize)))
+	kaOpts := comm.DefaultKeepaliveOptions
+	dialOpts = append(dialOpts, comm.ClientKeepaliveOptions(kaOpts)...)
+
+	return dialOpts
 }

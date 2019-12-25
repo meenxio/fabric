@@ -21,6 +21,9 @@ import (
 	"os"
 	"testing"
 
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset/kvrwset"
+	"github.com/hyperledger/fabric-protos-go/peer"
+	"github.com/hyperledger/fabric/bccsp/sw"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
@@ -28,8 +31,6 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/validator/internal"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
 	"github.com/hyperledger/fabric/core/ledger/util"
-	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
-	"github.com/hyperledger/fabric/protos/peer"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -42,18 +43,32 @@ type keyValue struct {
 	version    *version.Height
 }
 
+// Tests will be run against each environment in this array
+// For example, to skip CouchDB tests, remove &couchDBLockBasedEnv{}
+var testEnvs = []privacyenabledstate.TestEnv{
+	&privacyenabledstate.LevelDBCommonStorageTestEnv{},
+	&privacyenabledstate.CouchDBCommonStorageTestEnv{},
+}
+
 func TestMain(m *testing.M) {
 	flogging.ActivateSpec("statevalidator,statebasedval,statecouchdb=debug")
-	os.Exit(m.Run())
+	exitCode := m.Run()
+	for _, testEnv := range testEnvs {
+		testEnv.StopExternalResource()
+	}
+	os.Exit(exitCode)
 }
 
 func TestValidatorBulkLoadingOfCache(t *testing.T) {
-	testDBEnv := privacyenabledstate.CouchDBCommonStorageTestEnv{}
+	testDBEnv := testEnvs[1] // couchDB common storage test environment
 	testDBEnv.Init(t)
 	defer testDBEnv.Cleanup()
 	db := testDBEnv.GetDBHandle("testdb")
 
-	validator := NewValidator(db)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+
+	validator := &Validator{DB: db, Hasher: cryptoProvider}
 
 	//populate db with initial data
 	batch := privacyenabledstate.NewUpdateBatch()
@@ -105,13 +120,13 @@ func TestValidatorBulkLoadingOfCache(t *testing.T) {
 	}
 	block := &internal.Block{Num: 1, Txs: trans}
 
-	if validator.db.IsBulkOptimizable() {
+	if validator.DB.IsBulkOptimizable() {
 
-		commonStorageDB := validator.db.(*privacyenabledstate.CommonStorageDB)
+		commonStorageDB := validator.DB.(*privacyenabledstate.CommonStorageDB)
 		bulkOptimizable, _ := commonStorageDB.VersionedDB.(statedb.BulkOptimizable)
 
 		// Clear cache loaded during ApplyPrivacyAwareUpdates()
-		validator.db.ClearCachedVersions()
+		validator.DB.ClearCachedVersions()
 
 		validator.preLoadCommittedVersionOfRSet(block)
 
@@ -137,30 +152,30 @@ func TestValidatorBulkLoadingOfCache(t *testing.T) {
 		assert.Nil(t, version)
 
 		// hashedKV1 should be found in cache
-		version, keyFound = validator.db.GetCachedKeyHashVersion(hashedKV1.namespace,
+		version, keyFound = validator.DB.GetCachedKeyHashVersion(hashedKV1.namespace,
 			hashedKV1.collection, hashedKV1.keyHash)
 		assert.True(t, keyFound)
 		assert.Equal(t, hashedKV1.version, version)
 
 		// hashedKV2 should be found in cache
-		version, keyFound = validator.db.GetCachedKeyHashVersion(hashedKV2.namespace,
+		version, keyFound = validator.DB.GetCachedKeyHashVersion(hashedKV2.namespace,
 			hashedKV2.collection, hashedKV2.keyHash)
 		assert.True(t, keyFound)
 		assert.Equal(t, hashedKV2.version, version)
 
 		// [ns3, col1, hashedPvtKey1] should be found in cache as it was in the readset of transaction 2 though it is
 		// not in the state db
-		version, keyFound = validator.db.GetCachedKeyHashVersion("ns3", "col1", util.ComputeStringHash("hashedPvtKey1"))
+		version, keyFound = validator.DB.GetCachedKeyHashVersion("ns3", "col1", util.ComputeStringHash("hashedPvtKey1"))
 		assert.True(t, keyFound)
 		assert.Nil(t, version)
 
 		// [ns4, col, key1] should not be found in cache as it was not loaded
-		version, keyFound = validator.db.GetCachedKeyHashVersion("ns4", "col1", util.ComputeStringHash("key1"))
+		version, keyFound = validator.DB.GetCachedKeyHashVersion("ns4", "col1", util.ComputeStringHash("key1"))
 		assert.False(t, keyFound)
 		assert.Nil(t, version)
 
 		// Clear cache
-		validator.db.ClearCachedVersions()
+		validator.DB.ClearCachedVersions()
 
 		// pubKV1 should not be found in cache as cahce got emptied
 		version, keyFound = bulkOptimizable.GetCachedVersion(pubKV1.namespace, pubKV1.key)
@@ -168,14 +183,14 @@ func TestValidatorBulkLoadingOfCache(t *testing.T) {
 		assert.Nil(t, version)
 
 		// [ns3, col1, key1] should not be found in cache as cahce got emptied
-		version, keyFound = validator.db.GetCachedKeyHashVersion("ns3", "col1", util.ComputeStringHash("hashedPvtKey1"))
+		version, keyFound = validator.DB.GetCachedKeyHashVersion("ns3", "col1", util.ComputeStringHash("hashedPvtKey1"))
 		assert.False(t, keyFound)
 		assert.Nil(t, version)
 	}
 }
 
 func TestValidator(t *testing.T) {
-	testDBEnv := privacyenabledstate.LevelDBCommonStorageTestEnv{}
+	testDBEnv := testEnvs[0] // LevelDB common storage test environment
 	testDBEnv.Init(t)
 	defer testDBEnv.Cleanup()
 	db := testDBEnv.GetDBHandle("TestDB")
@@ -189,7 +204,9 @@ func TestValidator(t *testing.T) {
 	batch.PubUpdates.Put("ns1", "key5", []byte("value5"), version.NewHeight(1, 4))
 	db.ApplyPrivacyAwareUpdates(batch, version.NewHeight(1, 4))
 
-	validator := NewValidator(db)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	validator := &Validator{DB: db, Hasher: cryptoProvider}
 
 	//rwset1 should be valid
 	rwsetBuilder1 := rwsetutil.NewRWSetBuilder()
@@ -218,7 +235,7 @@ func TestValidator(t *testing.T) {
 }
 
 func TestPhantomValidation(t *testing.T) {
-	testDBEnv := privacyenabledstate.LevelDBCommonStorageTestEnv{}
+	testDBEnv := testEnvs[0] // LevelDB common storage test environment
 	testDBEnv.Init(t)
 	defer testDBEnv.Cleanup()
 	db := testDBEnv.GetDBHandle("TestDB")
@@ -232,7 +249,9 @@ func TestPhantomValidation(t *testing.T) {
 	batch.PubUpdates.Put("ns1", "key5", []byte("value5"), version.NewHeight(1, 4))
 	db.ApplyPrivacyAwareUpdates(batch, version.NewHeight(1, 4))
 
-	validator := NewValidator(db)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	validator := &Validator{DB: db, Hasher: cryptoProvider}
 
 	//rwset1 should be valid
 	rwsetBuilder1 := rwsetutil.NewRWSetBuilder()
@@ -289,7 +308,7 @@ func TestPhantomValidation(t *testing.T) {
 }
 
 func TestPhantomHashBasedValidation(t *testing.T) {
-	testDBEnv := privacyenabledstate.LevelDBCommonStorageTestEnv{}
+	testDBEnv := testEnvs[0] // LevelDB common storage test environment
 	testDBEnv.Init(t)
 	defer testDBEnv.Cleanup()
 	db := testDBEnv.GetDBHandle("TestDB")
@@ -307,7 +326,9 @@ func TestPhantomHashBasedValidation(t *testing.T) {
 	batch.PubUpdates.Put("ns1", "key9", []byte("value9"), version.NewHeight(1, 8))
 	db.ApplyPrivacyAwareUpdates(batch, version.NewHeight(1, 8))
 
-	validator := NewValidator(db)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	validator := &Validator{DB: db, Hasher: cryptoProvider}
 
 	rwsetBuilder1 := rwsetutil.NewRWSetBuilder()
 	rqi1 := &kvrwset.RangeQueryInfo{StartKey: "key2", EndKey: "key9", ItrExhausted: true}
@@ -371,7 +392,9 @@ func buildTestHashResults(t *testing.T, maxDegree int, kvReads []*kvrwset.KVRead
 	if len(kvReads) <= maxDegree {
 		t.Fatal("This method should be called with number of KVReads more than maxDegree; Else, hashing won't be performedrwset")
 	}
-	helper, _ := rwsetutil.NewRangeQueryResultsHelper(true, uint32(maxDegree))
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	helper, _ := rwsetutil.NewRangeQueryResultsHelper(true, uint32(maxDegree), cryptoProvider)
 	for _, kvRead := range kvReads {
 		helper.AddResult(kvRead)
 	}

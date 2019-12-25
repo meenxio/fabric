@@ -37,8 +37,12 @@ default embedded LevelDB, and move to CouchDB if you require the additional comp
 It is a good practice to model chaincode asset data as JSON, so that you have the option to perform
 complex rich queries if needed in the future.
 
-.. note:: The key for a CouchDB JSON document cannot begin with an underscore ("_").  Also, a JSON
-   document cannot use the following field names at the top level.  These are reserved for internal use.
+.. note:: The key for a CouchDB JSON document can only contain valid UTF-8 strings and cannot begin
+   with an underscore ("_"). Whether you are using CouchDB or LevelDB, you should avoid using
+   U+0000 (nil byte) in keys.
+
+   JSON documents in CouchDB cannot use the following values as top level field names. These values
+   are reserved for internal use.
 
    - ``Any field beginning with an underscore, "_"``
    - ``~version``
@@ -49,7 +53,7 @@ Using CouchDB from Chaincode
 Chaincode queries
 ~~~~~~~~~~~~~~~~~
 
-Most of the `chaincode shim APIs <https://godoc.org/github.com/hyperledger/fabric/core/chaincode/shim#ChaincodeStubInterface>`__
+Most of the `chaincode shim APIs <https://godoc.org/github.com/hyperledger/fabric-chaincode-go/shim#ChaincodeStubInterface>`__
 can be utilized with either LevelDB or CouchDB state database, e.g. ``GetState``, ``PutState``,
 ``GetStateByRange``, ``GetStateByPartialCompositeKey``. Additionally when you utilize CouchDB as
 the state database and model assets as JSON in chaincode, you can perform rich queries against

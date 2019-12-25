@@ -7,45 +7,46 @@ SPDX-License-Identifier: Apache-2.0
 package peer
 
 import (
+	"io/ioutil"
+	"os"
 	"testing"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric/bccsp/sw"
 	"github.com/hyperledger/fabric/common/capabilities"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	configtxtest "github.com/hyperledger/fabric/common/configtx/test"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
+	"github.com/hyperledger/fabric/core/config/configtest"
 	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/core/ledger/customtx"
-	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
-	"github.com/hyperledger/fabric/internal/configtxgen/configtxgentest"
 	"github.com/hyperledger/fabric/internal/configtxgen/encoder"
-	genesisconfig "github.com/hyperledger/fabric/internal/configtxgen/localconfig"
-	"github.com/hyperledger/fabric/protos/common"
+	"github.com/hyperledger/fabric/internal/configtxgen/genesisconfig"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestConfigTxCreateLedger(t *testing.T) {
-	helper := &testHelper{t: t}
-
+	helper := newTestHelper(t)
 	channelID := "testchain1"
-	cleanup, err := ledgermgmt.InitializeTestEnvWithInitializer(
-		&ledgermgmt.Initializer{
-			CustomTxProcessors: customtx.Processors{
-				common.HeaderType_CONFIG: &ConfigTxProcessor{},
-			},
-		},
-	)
+	tempdir, err := ioutil.TempDir("", "peer-test")
+	require.NoError(t, err, "failed to create temporary directory")
+
+	ledgerMgr, err := constructLedgerMgrWithTestDefaults(tempdir)
 	if err != nil {
 		t.Fatalf("Failed to create test environment: %s", err)
 	}
 
-	defer cleanup()
+	defer func() {
+		ledgerMgr.Close()
+		os.RemoveAll(tempdir)
+	}()
 
 	chanConf := helper.sampleChannelConfig(1, true)
 	genesisTx := helper.constructGenesisTx(t, channelID, chanConf)
 	genesisBlock := helper.constructBlock(genesisTx, 0, nil)
-	ledger, err := ledgermgmt.CreateLedger(genesisBlock)
+	ledger, err := ledgerMgr.CreateLedger(channelID, genesisBlock)
 	assert.NoError(t, err)
 
 	retrievedchanConf, err := retrievePersistedChannelConfig(ledger)
@@ -53,26 +54,42 @@ func TestConfigTxCreateLedger(t *testing.T) {
 	assert.Equal(t, proto.CompactTextString(chanConf), proto.CompactTextString(retrievedchanConf))
 }
 
+func TestConfigTxErrorScenarios(t *testing.T) {
+	configTxProcessor := &ConfigTxProcessor{}
+	// wrong tx type
+	configEnvWrongTxType := &common.ConfigEnvelope{}
+	txEnvelope, err := protoutil.CreateSignedEnvelope(common.HeaderType_PEER_ADMIN_OPERATION, "channelID", nil, configEnvWrongTxType, 0, 0)
+	require.NoError(t, err)
+	err = configTxProcessor.GenerateSimulationResults(txEnvelope, nil, false)
+	require.EqualError(t, err, "tx type [PEER_ADMIN_OPERATION] is not expected")
+
+	// empty channelConfig
+	txEnvelope, err = protoutil.CreateSignedEnvelope(common.HeaderType_CONFIG, "channelID", nil, &common.ConfigEnvelope{}, 0, 0)
+	require.NoError(t, err)
+	err = configTxProcessor.GenerateSimulationResults(txEnvelope, nil, false)
+	require.EqualError(t, err, "channel config found nil")
+}
+
 func TestConfigTxUpdateChanConfig(t *testing.T) {
-	helper := &testHelper{t: t}
+	helper := newTestHelper(t)
 	channelID := "testchain1"
-	cleanup, err := ledgermgmt.InitializeTestEnvWithInitializer(
-		&ledgermgmt.Initializer{
-			CustomTxProcessors: customtx.Processors{
-				common.HeaderType_CONFIG: &ConfigTxProcessor{},
-			},
-		},
-	)
+	tempdir, err := ioutil.TempDir("", "peer-test")
+	require.NoError(t, err, "failed to create temporary directory")
+
+	ledgerMgr, err := constructLedgerMgrWithTestDefaults(tempdir)
 	if err != nil {
 		t.Fatalf("Failed to create test environment: %s", err)
 	}
 
-	defer cleanup()
+	defer func() {
+		ledgerMgr.Close()
+		os.RemoveAll(tempdir)
+	}()
 
 	chanConf := helper.sampleChannelConfig(1, true)
 	genesisTx := helper.constructGenesisTx(t, channelID, chanConf)
 	genesisBlock := helper.constructBlock(genesisTx, 0, nil)
-	lgr, err := ledgermgmt.CreateLedger(genesisBlock)
+	lgr, err := ledgerMgr.CreateLedger(channelID, genesisBlock)
 	assert.NoError(t, err)
 
 	retrievedchanConf, err := retrievePersistedChannelConfig(lgr)
@@ -82,7 +99,7 @@ func TestConfigTxUpdateChanConfig(t *testing.T) {
 	helper.mockCreateChain(t, channelID, lgr)
 	defer helper.clearMockChains()
 
-	bs := Default.channels[channelID].bundleSource
+	bs := helper.peer.channels[channelID].bundleSource
 	inMemoryChanConf := bs.ConfigtxValidator().ConfigProto()
 	assert.Equal(t, proto.CompactTextString(chanConf), proto.CompactTextString(inMemoryChanConf))
 
@@ -92,28 +109,27 @@ func TestConfigTxUpdateChanConfig(t *testing.T) {
 
 	lgr.Close()
 	helper.clearMockChains()
-	_, err = ledgermgmt.OpenLedger(channelID)
+	_, err = ledgerMgr.OpenLedger(channelID)
 	assert.NoError(t, err)
 }
 
 func TestGenesisBlockCreateLedger(t *testing.T) {
 	b, err := configtxtest.MakeGenesisBlock("testchain")
 	assert.NoError(t, err)
+	tempdir, err := ioutil.TempDir("", "peer-test")
+	require.NoError(t, err, "failed to create temporary directory")
 
-	cleanup, err := ledgermgmt.InitializeTestEnvWithInitializer(
-		&ledgermgmt.Initializer{
-			CustomTxProcessors: customtx.Processors{
-				common.HeaderType_CONFIG: &ConfigTxProcessor{},
-			},
-		},
-	)
+	ledgerMgr, err := constructLedgerMgrWithTestDefaults(tempdir)
 	if err != nil {
 		t.Fatalf("Failed to create test environment: %s", err)
 	}
 
-	defer cleanup()
+	defer func() {
+		ledgerMgr.Close()
+		os.RemoveAll(tempdir)
+	}()
 
-	lgr, err := ledgermgmt.CreateLedger(b)
+	lgr, err := ledgerMgr.CreateLedger("testchain", b)
 	assert.NoError(t, err)
 	chanConf, err := retrievePersistedChannelConfig(lgr)
 	assert.NoError(t, err)
@@ -122,11 +138,21 @@ func TestGenesisBlockCreateLedger(t *testing.T) {
 }
 
 type testHelper struct {
-	t *testing.T
+	t    *testing.T
+	peer *Peer
+}
+
+func newTestHelper(t *testing.T) *testHelper {
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	return &testHelper{
+		t:    t,
+		peer: &Peer{CryptoProvider: cryptoProvider},
+	}
 }
 
 func (h *testHelper) sampleChannelConfig(sequence uint64, enableV11Capability bool) *common.Config {
-	profile := configtxgentest.Load(genesisconfig.SampleDevModeSoloProfile)
+	profile := genesisconfig.Load(genesisconfig.SampleDevModeSoloProfile, configtest.GetDevConfigDir())
 	if enableV11Capability {
 		profile.Orderer.Capabilities = make(map[string]bool)
 		profile.Orderer.Capabilities[capabilities.ApplicationV1_1] = true
@@ -158,31 +184,46 @@ func (h *testHelper) constructLastUpdateField(channelID string) *common.Envelope
 	configUpdate := protoutil.MarshalOrPanic(&common.ConfigUpdate{
 		ChannelId: channelID,
 	})
-	envelopeForLastUpdateField, _ := protoutil.CreateSignedEnvelope(common.HeaderType_CONFIG_UPDATE, channelID, nil, &common.ConfigUpdateEnvelope{ConfigUpdate: configUpdate}, 0, 0)
+	envelopeForLastUpdateField, _ := protoutil.CreateSignedEnvelope(
+		common.HeaderType_CONFIG_UPDATE,
+		channelID,
+		nil,
+		&common.ConfigUpdateEnvelope{ConfigUpdate: configUpdate},
+		0,
+		0,
+	)
 	return envelopeForLastUpdateField
 }
 
 func (h *testHelper) mockCreateChain(t *testing.T, channelID string, ledger ledger.PeerLedger) {
 	chanBundle, err := h.constructChannelBundle(channelID, ledger)
 	assert.NoError(t, err)
-	if Default.channels == nil {
-		Default.channels = map[string]*Channel{}
+	if h.peer.channels == nil {
+		h.peer.channels = map[string]*Channel{}
 	}
-	Default.channels[channelID] = &Channel{
-		bundleSource: channelconfig.NewBundleSource(chanBundle),
-		ledger:       ledger,
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	h.peer.channels[channelID] = &Channel{
+		bundleSource:   channelconfig.NewBundleSource(chanBundle),
+		ledger:         ledger,
+		cryptoProvider: cryptoProvider,
 	}
 }
 
 func (h *testHelper) clearMockChains() {
-	Default.channels = make(map[string]*Channel)
+	h.peer.channels = make(map[string]*Channel)
 }
 
 func (h *testHelper) constructChannelBundle(channelID string, ledger ledger.PeerLedger) (*channelconfig.Bundle, error) {
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	if err != nil {
+		return nil, err
+	}
+
 	chanConf, err := retrievePersistedChannelConfig(ledger)
 	if err != nil {
 		return nil, err
 	}
 
-	return channelconfig.NewBundle(channelID, chanConf)
+	return channelconfig.NewBundle(channelID, chanConf, cryptoProvider)
 }

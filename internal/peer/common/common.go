@@ -12,10 +12,12 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
+	pcommon "github.com/hyperledger/fabric-protos-go/common"
+	pb "github.com/hyperledger/fabric-protos-go/peer"
+	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/bccsp/factory"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/flogging"
@@ -24,8 +26,6 @@ import (
 	"github.com/hyperledger/fabric/core/scc/cscc"
 	"github.com/hyperledger/fabric/msp"
 	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
-	pcommon "github.com/hyperledger/fabric/protos/common"
-	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
@@ -71,7 +71,7 @@ var (
 	// GetOrdererEndpointOfChainFnc returns orderer endpoints of given chain
 	// by default it is set to GetOrdererEndpointOfChain function
 	GetOrdererEndpointOfChainFnc func(chainID string, signer Signer,
-		endorserClient pb.EndorserClient) ([]string, error)
+		endorserClient pb.EndorserClient, cryptoProvider bccsp.BCCSP) ([]string, error)
 
 	// GetCertificateFnc is a function that returns the client TLS certificate
 	GetCertificateFnc func() (tls.Certificate, error)
@@ -155,9 +155,9 @@ func SetBCCSPKeystorePath() {
 		config.GetPath("peer.BCCSP.SW.FileKeyStore.KeyStore"))
 }
 
-// GetDefaultSigner return a default Signer(Default/PERR) for cli
+// GetDefaultSigner return a default Signer(Default/PEER) for cli
 func GetDefaultSigner() (msp.SigningIdentity, error) {
-	signer, err := mspmgmt.GetLocalMSP().GetDefaultSigningIdentity()
+	signer, err := mspmgmt.GetLocalMSP(factory.GetDefault()).GetDefaultSigningIdentity()
 	if err != nil {
 		return nil, errors.WithMessage(err, "error obtaining the default signing identity")
 	}
@@ -172,7 +172,7 @@ type Signer interface {
 }
 
 // GetOrdererEndpointOfChain returns orderer endpoints of given chain
-func GetOrdererEndpointOfChain(chainID string, signer Signer, endorserClient pb.EndorserClient) ([]string, error) {
+func GetOrdererEndpointOfChain(chainID string, signer Signer, endorserClient pb.EndorserClient, cryptoProvider bccsp.BCCSP) ([]string, error) {
 	// query cscc for chain config block
 	invocation := &pb.ChaincodeInvocationSpec{
 		ChaincodeSpec: &pb.ChaincodeSpec{
@@ -211,7 +211,7 @@ func GetOrdererEndpointOfChain(chainID string, signer Signer, endorserClient pb.
 	}
 
 	// parse config block
-	block, err := protoutil.GetBlockFromBlockBytes(proposalResp.Response.Payload)
+	block, err := protoutil.UnmarshalBlock(proposalResp.Response.Payload)
 	if err != nil {
 		return nil, errors.WithMessage(err, "error unmarshaling config block")
 	}
@@ -220,7 +220,7 @@ func GetOrdererEndpointOfChain(chainID string, signer Signer, endorserClient pb.
 	if err != nil {
 		return nil, errors.WithMessage(err, "error extracting config block envelope")
 	}
-	bundle, err := channelconfig.NewBundleFromEnvelope(envelopeConfig)
+	bundle, err := channelconfig.NewBundleFromEnvelope(envelopeConfig, cryptoProvider)
 	if err != nil {
 		return nil, errors.WithMessage(err, "error loading config block")
 	}
@@ -245,7 +245,7 @@ func configFromEnv(prefix string) (address, override string, clientConfig comm.C
 		connTimeout = defaultConnTimeout
 	}
 	clientConfig.Timeout = connTimeout
-	secOpts := &comm.SecureOptions{
+	secOpts := comm.SecureOptions{
 		UseTLS:            viper.GetBool(prefix + ".tls.enabled"),
 		RequireClientCert: viper.GetBool(prefix + ".tls.clientAuthRequired")}
 	if secOpts.UseTLS {
@@ -317,6 +317,4 @@ func InitCmd(cmd *cobra.Command, args []string) {
 		mainLogger.Errorf("Cannot run peer because %s", err.Error())
 		os.Exit(1)
 	}
-
-	runtime.GOMAXPROCS(viper.GetInt("peer.gomaxprocs"))
 }

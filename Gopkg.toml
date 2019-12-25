@@ -12,7 +12,6 @@ ignored = [
 ]
 
 noverify = [
-    "github.com/grpc-ecosystem/go-grpc-middleware",
     "github.com/konsorten/go-windows-terminal-sequences",
 ]
 
@@ -58,7 +57,7 @@ noverify = [
 
 [[constraint]]
   name = "github.com/miekg/pkcs11"
-  version = "v1.0.2"
+  version = "v1.0.3"
 
 [[constraint]]
   name = "github.com/mitchellh/mapstructure"
@@ -97,16 +96,12 @@ noverify = [
   revision = "959b441ac422379a43da2230f62be024250818b0"
 
 [[constraint]]
-  branch = "master"
-  name = "golang.org/x/net"
-
-[[constraint]]
   name = "golang.org/x/tools"
   branch = "release-branch.go1.12"
 
 [[constraint]]
   name = "google.golang.org/grpc"
-  version = "1.20.0"
+  version = "1.24.0"
 
 [[constraint]]
   name = "gopkg.in/alecthomas/kingpin.v2"
@@ -132,11 +127,6 @@ noverify = [
   name = "github.com/onsi/gomega"
   version = "1.5.0"
 
-# https://github.com/golang/dep/issues/1799
-[[override]]
-  name = "gopkg.in/fsnotify.v1"
-  source = "gopkg.in/fsnotify/fsnotify.v1"
-
 [[constraint]]
   name = "go.etcd.io/etcd"
   revision = "23731bf9ba556867089a9cc8db5e492ca6035fe8"
@@ -151,7 +141,7 @@ noverify = [
 
 [[constraint]]
   name = "github.com/grpc-ecosystem/go-grpc-middleware"
-  version = "1.0.0"
+  version = "1.1.0"
 
 [[constraint]]
   name = "github.com/willf/bitset"
@@ -160,6 +150,19 @@ noverify = [
 [[constraint]]
   name = "github.com/go-kit/kit"
   version = "0.7.0"
+
+[[constraint]]
+  name = "github.com/prometheus/client_golang"
+  version = "1.0"
+
+# https://github.com/golang/dep/issues/1799
+[[override]]
+  name = "gopkg.in/fsnotify.v1"
+  source = "gopkg.in/fsnotify/fsnotify.v1"
+
+[[override]]
+  name = "github.com/opencontainers/runc"
+  version = "1.0.0-rc8"
 
 [prune]
   go-tests = true
@@ -179,5 +182,13 @@ noverify = [
       non-go = false
 
 [[constraint]]
-  name = "github.com/prometheus/client_golang"
-  version = "0.9.0"
+  branch = "master"
+  name = "github.com/hyperledger/fabric-protos-go"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/hyperledger/fabric-chaincode-go"
+
+[[constraint]]
+  name = "github.com/VictoriaMetrics/fastcache"
+  version = "1.4.6"

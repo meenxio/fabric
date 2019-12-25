@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	proto "github.com/hyperledger/fabric-protos-go/gossip"
 	"github.com/hyperledger/fabric/bccsp/factory"
 	"github.com/hyperledger/fabric/common/metrics/disabled"
 	corecomm "github.com/hyperledger/fabric/core/comm"
@@ -31,7 +33,6 @@ import (
 	"github.com/hyperledger/fabric/gossip/metrics/mocks"
 	"github.com/hyperledger/fabric/gossip/protoext"
 	"github.com/hyperledger/fabric/gossip/util"
-	proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -171,7 +172,7 @@ func (*naiveCryptoService) GetPKIidOfCert(peerIdentity api.PeerIdentityType) com
 
 // VerifyBlock returns nil if the block is properly signed,
 // else returns error
-func (*naiveCryptoService) VerifyBlock(channelID common.ChannelID, seqNum uint64, signedBlock []byte) error {
+func (*naiveCryptoService) VerifyBlock(channelID common.ChannelID, seqNum uint64, signedBlock *cb.Block) error {
 	return nil
 }
 
@@ -251,7 +252,7 @@ func newGossipInstanceWithGrpcMcsMetrics(id int, port int, gRPCServer *corecomm.
 	go func() {
 		gRPCServer.Start()
 	}()
-	return &gossipGRPC{GossipImpl: g, grpc: gRPCServer}
+	return &gossipGRPC{Node: g, grpc: gRPCServer}
 }
 
 func newGossipInstanceWithGRPC(id int, port int, gRPCServer *corecomm.GRPCServer, certs *common.TLSCertificates,
@@ -308,7 +309,7 @@ func newGossipInstanceWithGRPCWithOnlyPull(id int, port int, gRPCServer *corecom
 	go func() {
 		gRPCServer.Start()
 	}()
-	return &gossipGRPC{GossipImpl: g, grpc: gRPCServer}
+	return &gossipGRPC{Node: g, grpc: gRPCServer}
 }
 
 func newGossipInstanceCreateGRPCWithMCSWithMetrics(id int, maxMsgCount int, mcs api.MessageCryptoService,
@@ -330,12 +331,12 @@ func newGossipInstanceCreateGRPCWithOnlyPull(id int, maxMsgCount int, mcs api.Me
 }
 
 type gossipGRPC struct {
-	*GossipImpl
+	*Node
 	grpc *corecomm.GRPCServer
 }
 
 func (g *gossipGRPC) Stop() {
-	g.GossipImpl.Stop()
+	g.Node.Stop()
 	g.grpc.Stop()
 }
 
@@ -810,7 +811,7 @@ func TestDissemination(t *testing.T) {
 	incTime := uint64(time.Now().UnixNano())
 	t3 := time.Now()
 
-	leadershipMsg := createLeadershipMsg(true, common.ChannelID("A"), incTime, uint64(seqNum), boot.GossipImpl.comm.GetPKIid())
+	leadershipMsg := createLeadershipMsg(true, common.ChannelID("A"), incTime, uint64(seqNum), boot.Node.comm.GetPKIid())
 	boot.Gossip(leadershipMsg)
 
 	waitUntilOrFailBlocking(t, wgLeadership.Wait, "waiting to get all leadership messages")
@@ -1423,7 +1424,7 @@ func TestIdentityExpiration(t *testing.T) {
 	// Make the last peer be revoked in 5 seconds from now
 	time.AfterFunc(time.Second*5, func() {
 		for _, p := range peers {
-			p.GossipImpl.mcs.(*naiveCryptoService).revoke(common.PKIidType(endpointLast))
+			p.Node.mcs.(*naiveCryptoService).revoke(common.PKIidType(endpointLast))
 		}
 	})
 
@@ -1446,7 +1447,7 @@ func TestIdentityExpiration(t *testing.T) {
 		if i == revokedPeerIndex {
 			continue
 		}
-		p.GossipImpl.mcs.(*naiveCryptoService).revoke(revokedPkiID)
+		p.Node.mcs.(*naiveCryptoService).revoke(revokedPkiID)
 	}
 	// Trigger a config update to the rest of the peers
 	for i := 0; i < 4; i++ {

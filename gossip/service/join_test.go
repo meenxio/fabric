@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	proto "github.com/hyperledger/fabric-protos-go/gossip"
+	"github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/comm"
@@ -20,8 +22,7 @@ import (
 	"github.com/hyperledger/fabric/gossip/gossip"
 	"github.com/hyperledger/fabric/gossip/protoext"
 	"github.com/hyperledger/fabric/gossip/util"
-	proto "github.com/hyperledger/fabric/protos/gossip"
-	"github.com/hyperledger/fabric/protos/peer"
+	"github.com/hyperledger/fabric/msp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -125,6 +126,10 @@ func (*appOrgMock) Name() string {
 	panic("implement me")
 }
 
+func (*appOrgMock) MSP() msp.MSP {
+	panic("generate this fake instead")
+}
+
 func (ao *appOrgMock) MSPID() string {
 	return ao.id
 }
@@ -141,7 +146,7 @@ func (c *configMock) OrdererAddresses() []string {
 	return []string{"localhost:7050"}
 }
 
-func (*configMock) ChainID() string {
+func (*configMock) ChannelID() string {
 	return "A"
 }
 

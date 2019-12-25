@@ -10,12 +10,12 @@ import (
 	"testing"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/common/privdata"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/scc/lscc"
 	"github.com/hyperledger/fabric/core/scc/lscc/mock"
-	"github.com/hyperledger/fabric/protos/common"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -87,6 +87,14 @@ func TestCollectionInfo(t *testing.T) {
 	collInfo3, err := ccInfoProvdier.CollectionInfo("", "cc2", "non-existing-coll-in-cc2", mockQE)
 	assert.NoError(t, err)
 	assert.Nil(t, collInfo3)
+
+	ccPkg1, err := ccInfoProvdier.AllCollectionsConfigPkg("", "cc1", mockQE)
+	assert.NoError(t, err)
+	assert.Nil(t, ccPkg1)
+
+	ccPkg2, err := ccInfoProvdier.AllCollectionsConfigPkg("", "cc2", mockQE)
+	assert.NoError(t, err)
+	assert.Equal(t, prepapreCollectionConfigPkg([]string{"cc2_coll1", "cc2_coll2"}), ccPkg2)
 }
 
 func prepareMockQE(t *testing.T, deployedChaincodes []*ledger.DeployedChaincodeInfo) *mock.QueryExecutor {
@@ -111,15 +119,15 @@ func prepareMockQE(t *testing.T, deployedChaincodes []*ledger.DeployedChaincodeI
 	return mockQE
 }
 
-func prepapreCollectionConfigPkg(collNames []string) *common.CollectionConfigPackage {
-	pkg := &common.CollectionConfigPackage{}
+func prepapreCollectionConfigPkg(collNames []string) *peer.CollectionConfigPackage {
+	pkg := &peer.CollectionConfigPackage{}
 	for _, collName := range collNames {
-		sCollConfig := &common.CollectionConfig_StaticCollectionConfig{
-			StaticCollectionConfig: &common.StaticCollectionConfig{
+		sCollConfig := &peer.CollectionConfig_StaticCollectionConfig{
+			StaticCollectionConfig: &peer.StaticCollectionConfig{
 				Name: collName,
 			},
 		}
-		config := &common.CollectionConfig{Payload: sCollConfig}
+		config := &peer.CollectionConfig{Payload: sCollConfig}
 		pkg.Config = append(pkg.Config, config)
 	}
 	return pkg

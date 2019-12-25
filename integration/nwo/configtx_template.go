@@ -31,6 +31,26 @@ Organizations:{{ range .PeerOrgs }}
     Port: {{ $w.PeerPort . "Listen" }}
   {{- end }}
 {{- end }}
+{{- range .IdemixOrgs }}
+- &{{ .MSPID }}
+  Name: {{ .Name }}
+  ID: {{ .MSPID }}
+  MSPDir: {{ $w.IdemixOrgMSPDir . }}
+  MSPType: idemix
+  Policies:
+    Readers:
+      Type: Signature
+      Rule: OR('{{.MSPID}}.admin', '{{.MSPID}}.peer', '{{.MSPID}}.client')
+    Writers:
+      Type: Signature
+      Rule: OR('{{.MSPID}}.admin', '{{.MSPID}}.client')
+    Endorsement:
+      Type: Signature
+      Rule: OR('{{.MSPID}}.peer')
+    Admins:
+      Type: Signature
+      Rule: OR('{{.MSPID}}.admin')
+{{ end }}
 {{- range .OrdererOrgs }}
 - &{{ .MSPID }}
   Name: {{ .Name }}
@@ -102,7 +122,7 @@ Profiles:{{ range .Profiles }}
           SnapshotIntervalSize: 1 KB
         Consenters:{{ range .Orderers }}{{ with $w.Orderer . }}
         - Host: 127.0.0.1
-          Port: {{ $w.OrdererPort . "Listen" }}
+          Port: {{ $w.OrdererPort . "Cluster" }}
           ClientTLSCert: {{ $w.OrdererLocalCryptoDir . "tls" }}/server.crt
           ServerTLSCert: {{ $w.OrdererLocalCryptoDir . "tls" }}/server.crt
         {{- end }}{{- end }}

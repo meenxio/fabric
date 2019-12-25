@@ -9,10 +9,14 @@ function filterExcludedAndGeneratedFiles {
     excluded_files=(
         '\.block$'
         '^\.build/'
+        '^build/'
         '(^|/)ci\.properties$'
         '(^|/)\.git/'
         '\.gen\.go$'
+        '(^|/)go.mod$'
+        '(^|/)go.sum$'
         '(^|/)Gopkg\.lock$'
+        '\.json$'
         '\.key$'
         '(^|/)LICENSE$'
         '\.md$'
@@ -26,7 +30,8 @@ function filterExcludedAndGeneratedFiles {
         '\.txt$'
         '(^|/)testdata\/'
         '(^|/)vendor\/'
-        '\.json$'
+        '(^|/)Pipfile$'
+        '(^|/)Pipfile\.lock$'
     )
 
     local filter

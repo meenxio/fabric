@@ -7,9 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 package privdata
 
 import (
+	"github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/msp"
-	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protoutil"
 )
 
@@ -28,7 +28,7 @@ func NewMembershipInfoProvider(selfSignedData protoutil.SignedData, identityDese
 
 // AmMemberOf checks whether the current peer is a member of the given collection config.
 // If getPolicy returns an error, it will drop the error and return false - same as a RejectAll policy.
-func (m *MembershipProvider) AmMemberOf(channelName string, collectionPolicyConfig *common.CollectionPolicyConfig) (bool, error) {
+func (m *MembershipProvider) AmMemberOf(channelName string, collectionPolicyConfig *peer.CollectionPolicyConfig) (bool, error) {
 	deserializer := m.IdentityDeserializerFactory(channelName)
 	accessPolicy, err := getPolicy(collectionPolicyConfig, deserializer)
 	if err != nil {
@@ -36,7 +36,7 @@ func (m *MembershipProvider) AmMemberOf(channelName string, collectionPolicyConf
 		logger.Errorf("Reject all due to error getting policy: %s", err)
 		return false, nil
 	}
-	if err := accessPolicy.Evaluate([]*protoutil.SignedData{&m.selfSignedData}); err != nil {
+	if err := accessPolicy.EvaluateSignedData([]*protoutil.SignedData{&m.selfSignedData}); err != nil {
 		return false, nil
 	}
 	return true, nil

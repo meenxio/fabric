@@ -96,7 +96,7 @@ The name of the custom plugin needs to be referenced by the chaincode definition
 to be used by the chaincode. If you are using the peer CLI to approve the
 chaincode definition, use the ``--escc`` and ``--vscc`` flag to select the name
 of the custom endorsement or validation library. If you are using the
-Fabric SDK for Node.js, visit `How to install and start your chaincode <https://fabric-sdk-node.github.io/master/tutorial-chaincode-lifecycle.html>`__.
+Fabric SDK for Node.js, visit `How to install and start your chaincode <https://hyperledger.github.io/fabric-sdk-node/master/tutorial-chaincode-lifecycle.html>`__.
 For more information, see :doc:`chaincode4noah`.
 
 .. note:: Hereafter, custom endorsement or validation logic implementation is
@@ -268,7 +268,7 @@ Currently Fabric comes with the following dependencies for validation plugins:
         // startKey is included in the results and endKey is excluded. An empty startKey refers to the first available key
         // and an empty endKey refers to the last available key. For scanning all the keys, both the startKey and the endKey
         // can be supplied as empty strings. However, a full scan should be used judiciously for performance reasons.
-        // The returned ResultsIterator contains results of type *KV which is defined in protos/ledger/queryresult.
+        // The returned ResultsIterator contains results of type *KV which is defined in fabric-protos/ledger/queryresult.
         GetStateRangeScanIterator(namespace string, startKey string, endKey string) (ResultsIterator, error)
 
         // GetStateMetadata returns the metadata for given namespace and key

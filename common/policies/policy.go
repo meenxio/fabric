@@ -11,9 +11,10 @@ import (
 	"strings"
 
 	"github.com/golang/protobuf/proto"
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/msp"
 	"github.com/hyperledger/fabric/common/flogging"
-	cb "github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/msp"
+	mspi "github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 	"go.uber.org/zap/zapcore"
@@ -128,8 +129,14 @@ type Converter interface {
 
 // Policy is used to determine if a signature is valid
 type Policy interface {
-	// Evaluate takes a set of SignedData and evaluates whether this set of signatures satisfies the policy
-	Evaluate(signatureSet []*protoutil.SignedData) error
+	// EvaluateSignedData takes a set of SignedData and evaluates whether
+	// 1) the signatures are valid over the related message
+	// 2) the signing identities satisfy the policy
+	EvaluateSignedData(signatureSet []*protoutil.SignedData) error
+
+	// EvaluateIdentities takes an array of identities and evaluates whether
+	// they satisfy the policy
+	EvaluateIdentities(identities []mspi.Identity) error
 }
 
 // InquireablePolicy is a Policy that one can inquire
@@ -239,7 +246,11 @@ func NewManagerImpl(path string, providers map[int32]Provider, root *cb.ConfigGr
 
 type rejectPolicy string
 
-func (rp rejectPolicy) Evaluate(signedData []*protoutil.SignedData) error {
+func (rp rejectPolicy) EvaluateSignedData(signedData []*protoutil.SignedData) error {
+	return errors.Errorf("no such policy: '%s'", rp)
+}
+
+func (rp rejectPolicy) EvaluateIdentities(identities []mspi.Identity) error {
 	return errors.Errorf("no such policy: '%s'", rp)
 }
 
@@ -266,13 +277,28 @@ type PolicyLogger struct {
 	policyName string
 }
 
-func (pl *PolicyLogger) Evaluate(signatureSet []*protoutil.SignedData) error {
+func (pl *PolicyLogger) EvaluateSignedData(signatureSet []*protoutil.SignedData) error {
 	if logger.IsEnabledFor(zapcore.DebugLevel) {
 		logger.Debugf("== Evaluating %T Policy %s ==", pl.Policy, pl.policyName)
 		defer logger.Debugf("== Done Evaluating %T Policy %s", pl.Policy, pl.policyName)
 	}
 
-	err := pl.Policy.Evaluate(signatureSet)
+	err := pl.Policy.EvaluateSignedData(signatureSet)
+	if err != nil {
+		logger.Debugf("Signature set did not satisfy policy %s", pl.policyName)
+	} else {
+		logger.Debugf("Signature set satisfies policy %s", pl.policyName)
+	}
+	return err
+}
+
+func (pl *PolicyLogger) EvaluateIdentities(identities []mspi.Identity) error {
+	if logger.IsEnabledFor(zapcore.DebugLevel) {
+		logger.Debugf("== Evaluating %T Policy %s ==", pl.Policy, pl.policyName)
+		defer logger.Debugf("== Done Evaluating %T Policy %s", pl.Policy, pl.policyName)
+	}
+
+	err := pl.Policy.EvaluateIdentities(identities)
 	if err != nil {
 		logger.Debugf("Signature set did not satisfy policy %s", pl.policyName)
 	} else {
@@ -329,4 +355,41 @@ func (pm *ManagerImpl) GetPolicy(id string) (Policy, bool) {
 		Policy:     policy,
 		policyName: PathSeparator + pm.path + PathSeparator + relpath,
 	}, true
+}
+
+// SignatureSetToValidIdentities takes a slice of pointers to signed data,
+// checks the validity of the signature and of the signer and returns a
+// slice of associated identities. The returned identities are deduplicated.
+func SignatureSetToValidIdentities(signedData []*protoutil.SignedData, identityDeserializer mspi.IdentityDeserializer) []mspi.Identity {
+	idMap := map[string]struct{}{}
+	identities := make([]mspi.Identity, 0, len(signedData))
+
+	for i, sd := range signedData {
+		identity, err := identityDeserializer.DeserializeIdentity(sd.Identity)
+		if err != nil {
+			logger.Warningf("principal deserialization failure (%s) for identity %x", err, sd.Identity)
+			continue
+		}
+
+		key := identity.GetIdentifier().Mspid + identity.GetIdentifier().Id
+
+		// We check if this identity has already appeared before doing a signature check, to ensure that
+		// someone cannot force us to waste time checking the same signature thousands of times
+		if _, ok := idMap[key]; ok {
+			logger.Warningf("De-duplicating identity [%s] at index %d in signature set", key, i)
+			continue
+		}
+
+		err = identity.Verify(sd.Data, sd.Signature)
+		if err != nil {
+			logger.Warningf("signature for identity %d is invalid: %s", i, err)
+			continue
+		}
+		logger.Debugf("signature for identity %d validated", i)
+
+		idMap[key] = struct{}{}
+		identities = append(identities, identity)
+	}
+
+	return identities
 }

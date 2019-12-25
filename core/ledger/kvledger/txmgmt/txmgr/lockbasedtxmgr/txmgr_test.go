@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hyperledger/fabric-protos-go/ledger/queryresult"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
@@ -21,7 +22,6 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
 	btltestutil "github.com/hyperledger/fabric/core/ledger/pvtdatapolicy/testutil"
 	"github.com/hyperledger/fabric/core/ledger/util"
-	"github.com/hyperledger/fabric/protos/ledger/queryresult"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -32,6 +32,7 @@ func TestTxSimulatorWithNoExistingData(t *testing.T) {
 		testLedgerID := "testtxsimulatorwithnoexistingdata"
 		testEnv.init(t, testLedgerID, nil)
 		testTxSimulatorWithNoExistingData(t, testEnv)
+		testEnv.cleanup()
 	}
 }
 
@@ -58,6 +59,7 @@ func testTxSimulatorWithNoExistingData(t *testing.T, env testEnv) {
 func TestTxSimulatorGetResults(t *testing.T) {
 	testEnv := testEnvsMap[levelDBtestEnvName]
 	testEnv.init(t, "testLedger", nil)
+	defer testEnv.cleanup()
 	txMgr := testEnv.getTxMgr()
 	populateCollConfigForTest(t, txMgr.(*LockBasedTxMgr),
 		[]collConfigkey{
@@ -115,6 +117,7 @@ func TestTxSimulatorWithExistingData(t *testing.T) {
 			testLedgerID := "testtxsimulatorwithexistingdata"
 			testEnv.init(t, testLedgerID, nil)
 			testTxSimulatorWithExistingData(t, testEnv)
+			testEnv.cleanup()
 		})
 	}
 }
@@ -167,6 +170,7 @@ func TestTxValidation(t *testing.T) {
 		testLedgerID := "testtxvalidation"
 		testEnv.init(t, testLedgerID, nil)
 		testTxValidation(t, testEnv)
+		testEnv.cleanup()
 	}
 }
 
@@ -253,6 +257,7 @@ func TestTxPhantomValidation(t *testing.T) {
 		testLedgerID := "testtxphantomvalidation"
 		testEnv.init(t, testLedgerID, nil)
 		testTxPhantomValidation(t, testEnv)
+		testEnv.cleanup()
 	}
 }
 
@@ -322,22 +327,27 @@ func TestIterator(t *testing.T) {
 		testLedgerID := "testiterator.1"
 		testEnv.init(t, testLedgerID, nil)
 		testIterator(t, testEnv, 10, 2, 7)
+		testEnv.cleanup()
 
 		testLedgerID = "testiterator.2"
 		testEnv.init(t, testLedgerID, nil)
 		testIterator(t, testEnv, 10, 1, 11)
+		testEnv.cleanup()
 
 		testLedgerID = "testiterator.3"
 		testEnv.init(t, testLedgerID, nil)
 		testIterator(t, testEnv, 10, 0, 0)
+		testEnv.cleanup()
 
 		testLedgerID = "testiterator.4"
 		testEnv.init(t, testLedgerID, nil)
 		testIterator(t, testEnv, 10, 5, 0)
+		testEnv.cleanup()
 
 		testLedgerID = "testiterator.5"
 		testEnv.init(t, testLedgerID, nil)
 		testIterator(t, testEnv, 10, 0, 5)
+		testEnv.cleanup()
 	}
 }
 
@@ -413,6 +423,7 @@ func TestIteratorPaging(t *testing.T) {
 		nextStartKey = testIteratorPaging(t, testEnv, 10, nextStartKey, "key_007", int32(2), returnKeys)
 		returnKeys = []string{"key_006"}
 		testIteratorPaging(t, testEnv, 10, nextStartKey, "key_007", int32(2), returnKeys)
+		testEnv.cleanup()
 	}
 }
 
@@ -477,6 +488,7 @@ func TestIteratorWithDeletes(t *testing.T) {
 		testLedgerID := "testiteratorwithdeletes"
 		testEnv.init(t, testLedgerID, nil)
 		testIteratorWithDeletes(t, testEnv)
+		testEnv.cleanup()
 	}
 }
 
@@ -518,6 +530,7 @@ func TestTxValidationWithItr(t *testing.T) {
 		testLedgerID := "testtxvalidationwithitr"
 		testEnv.init(t, testLedgerID, nil)
 		testTxValidationWithItr(t, testEnv)
+		testEnv.cleanup()
 	}
 }
 
@@ -582,6 +595,7 @@ func TestGetSetMultipeKeys(t *testing.T) {
 		testLedgerID := "testgetsetmultipekeys"
 		testEnv.init(t, testLedgerID, nil)
 		testGetSetMultipeKeys(t, testEnv)
+		testEnv.cleanup()
 	}
 }
 
@@ -636,7 +650,6 @@ func createTestValue(i int) []byte {
 
 //TestExecuteQueryQuery is only tested on the CouchDB testEnv
 func TestExecuteQuery(t *testing.T) {
-
 	for _, testEnv := range testEnvs {
 		// Query is only supported and tested on the CouchDB testEnv
 		if testEnv.getName() == couchDBtestEnvName {
@@ -644,6 +657,7 @@ func TestExecuteQuery(t *testing.T) {
 			testLedgerID := "testexecutequery"
 			testEnv.init(t, testLedgerID, nil)
 			testExecuteQuery(t, testEnv)
+			testEnv.cleanup()
 		}
 	}
 }
@@ -710,7 +724,6 @@ func testExecuteQuery(t *testing.T, env testEnv) {
 
 // TestExecutePaginatedQuery is only tested on the CouchDB testEnv
 func TestExecutePaginatedQuery(t *testing.T) {
-
 	for _, testEnv := range testEnvs {
 		// Query is only supported and tested on the CouchDB testEnv
 		if testEnv.getName() == couchDBtestEnvName {
@@ -718,6 +731,7 @@ func TestExecutePaginatedQuery(t *testing.T) {
 			testLedgerID := "testexecutepaginatedquery"
 			testEnv.init(t, testLedgerID, nil)
 			testExecutePaginatedQuery(t, testEnv)
+			testEnv.cleanup()
 		}
 	}
 }
@@ -818,6 +832,7 @@ func TestValidateKey(t *testing.T) {
 		if testEnv.getName() == couchDBtestEnvName {
 			assert.Error(t, err)
 		}
+		testEnv.cleanup()
 	}
 }
 
@@ -826,6 +841,7 @@ func TestValidateKey(t *testing.T) {
 func TestTxSimulatorUnsupportedTx(t *testing.T) {
 	testEnv := testEnvs[0]
 	testEnv.init(t, "testtxsimulatorunsupportedtx", nil)
+	defer testEnv.cleanup()
 	txMgr := testEnv.getTxMgr()
 	populateCollConfigForTest(t, txMgr.(*LockBasedTxMgr),
 		[]collConfigkey{
@@ -872,7 +888,6 @@ func TestTxSimulatorUnsupportedTx(t *testing.T) {
 
 // TestTxSimulatorQueryUnsupportedTx is only tested on the CouchDB testEnv
 func TestTxSimulatorQueryUnsupportedTx(t *testing.T) {
-
 	for _, testEnv := range testEnvs {
 		// Query is only supported and tested on the CouchDB testEnv
 		if testEnv.getName() == couchDBtestEnvName {
@@ -880,12 +895,12 @@ func TestTxSimulatorQueryUnsupportedTx(t *testing.T) {
 			testLedgerID := "testtxsimulatorunsupportedtxqueries"
 			testEnv.init(t, testLedgerID, nil)
 			testTxSimulatorQueryUnsupportedTx(t, testEnv)
+			testEnv.cleanup()
 		}
 	}
 }
 
 func testTxSimulatorQueryUnsupportedTx(t *testing.T, env testEnv) {
-
 	txMgr := env.getTxMgr()
 	txMgrHelper := newTxMgrTestHelper(t, txMgr)
 
@@ -982,6 +997,7 @@ func TestFindAndRemoveStalePvtData(t *testing.T) {
 	ledgerid := "TestFindAndRemoveStalePvtData"
 	testEnv := testEnvs[0]
 	testEnv.init(t, ledgerid, nil)
+	defer testEnv.cleanup()
 	db := testEnv.getVDB()
 
 	batch := privacyenabledstate.NewUpdateBatch()
@@ -995,17 +1011,22 @@ func TestFindAndRemoveStalePvtData(t *testing.T) {
 
 	// construct pvt data for some of the above missing data. note that no
 	// duplicate entries are expected
-	// old value and hence should not get accepted
+
+	// existent keyhash - a kvwrite with lower version (than the version of existent keyhash) should be considered stale
 	hashedCompositeKeyNs1Coll1Key1 := privacyenabledstate.HashedCompositeKey{Namespace: "ns1", CollectionName: "coll1", KeyHash: string(util.ComputeStringHash("key1"))}
 	pvtKVWriteNs1Coll1Key1 := &privacyenabledstate.PvtKVWrite{Key: "key1", IsDelete: false, Value: []byte("old_value_1_1_1"), Version: version.NewHeight(1, 0)}
 
-	// new value and hence should get accepted
+	// existent keyhash - a kvwrite with higher version (than the version of existent keyhash) should not be considered stale
 	hashedCompositeKeyNs2Coll1Key2 := privacyenabledstate.HashedCompositeKey{Namespace: "ns2", CollectionName: "coll1", KeyHash: string(util.ComputeStringHash("key2"))}
 	pvtKVWriteNs2Coll1Key2 := &privacyenabledstate.PvtKVWrite{Key: "key2", IsDelete: false, Value: []byte("value_2_1_2"), Version: version.NewHeight(2, 1)}
 
-	// delete -- should get accepted
+	// non existent keyhash (because deleted earlier or expired) - a kvwrite for delete should not be considered stale
 	hashedCompositeKeyNs1Coll3Key3 := privacyenabledstate.HashedCompositeKey{Namespace: "ns1", CollectionName: "coll3", KeyHash: string(util.ComputeStringHash("key3"))}
 	pvtKVWriteNs1Coll3Key3 := &privacyenabledstate.PvtKVWrite{Key: "key3", IsDelete: true, Value: nil, Version: version.NewHeight(2, 3)}
+
+	// non existent keyhash (because deleted earlier or expired) - a kvwrite for value set should be considered stale
+	hashedCompositeKeyNs1Coll4Key4 := privacyenabledstate.HashedCompositeKey{Namespace: "ns1", CollectionName: "coll4", KeyHash: string(util.ComputeStringHash("key4"))}
+	pvtKVWriteNs1Coll4Key4 := &privacyenabledstate.PvtKVWrite{Key: "key4", Value: []byte("value_1_4_4"), Version: version.NewHeight(2, 3)}
 
 	// there would be a version mismatch but the hash value must be the same. hence,
 	// this should be accepted too
@@ -1017,6 +1038,7 @@ func TestFindAndRemoveStalePvtData(t *testing.T) {
 		hashedCompositeKeyNs2Coll1Key2: pvtKVWriteNs2Coll1Key2,
 		hashedCompositeKeyNs1Coll3Key3: pvtKVWriteNs1Coll3Key3,
 		hashedCompositeKeyNs2Coll2Key3: pvtKVWriteNs2Coll2Key3,
+		hashedCompositeKeyNs1Coll4Key4: pvtKVWriteNs1Coll4Key4,
 	}
 
 	// created the expected batch from ValidateAndPrepareBatchForPvtDataofOldBlocks
@@ -1065,6 +1087,7 @@ func testValidationAndCommitOfOldPvtData(t *testing.T, env testEnv) {
 		},
 	)
 	env.init(t, ledgerid, btlPolicy)
+	defer env.cleanup()
 	txMgr := env.getTxMgr()
 	populateCollConfigForTest(t, txMgr.(*LockBasedTxMgr),
 		[]collConfigkey{
@@ -1157,6 +1180,7 @@ func testValidationAndCommitOfOldPvtData(t *testing.T, env testEnv) {
 func TestTxSimulatorMissingPvtdata(t *testing.T) {
 	testEnv := testEnvs[0]
 	testEnv.init(t, "TestTxSimulatorUnsupportedTxQueries", nil)
+	defer testEnv.cleanup()
 
 	txMgr := testEnv.getTxMgr()
 	populateCollConfigForTest(t, txMgr.(*LockBasedTxMgr),
@@ -1202,6 +1226,7 @@ func TestRemoveStaleAndCommitPvtDataOfOldBlocksWithExpiry(t *testing.T) {
 	)
 	testEnv := testEnvs[0]
 	testEnv.init(t, ledgerid, btlPolicy)
+	defer testEnv.cleanup()
 
 	txMgr := testEnv.getTxMgr()
 	populateCollConfigForTest(t, txMgr.(*LockBasedTxMgr),
@@ -1217,7 +1242,7 @@ func TestRemoveStaleAndCommitPvtDataOfOldBlocksWithExpiry(t *testing.T) {
 	// stored pvt key would get expired and purged while committing block 3
 	blkAndPvtdata := prepareNextBlockForTest(t, txMgr, bg, "txid-1",
 		map[string]string{"pubkey1": "pub-value1"}, map[string]string{"pvtkey1": "pvt-value1"}, true)
-	_, err := txMgr.ValidateAndPrepare(blkAndPvtdata, true)
+	_, _, err := txMgr.ValidateAndPrepare(blkAndPvtdata, true)
 	assert.NoError(t, err)
 	// committing block 1
 	assert.NoError(t, txMgr.Commit())
@@ -1243,7 +1268,7 @@ func TestRemoveStaleAndCommitPvtDataOfOldBlocksWithExpiry(t *testing.T) {
 	// stored pvt key would get expired and purged while committing block 4
 	blkAndPvtdata = prepareNextBlockForTest(t, txMgr, bg, "txid-2",
 		map[string]string{"pubkey2": "pub-value2"}, map[string]string{"pvtkey2": "pvt-value2"}, true)
-	_, err = txMgr.ValidateAndPrepare(blkAndPvtdata, true)
+	_, _, err = txMgr.ValidateAndPrepare(blkAndPvtdata, true)
 	assert.NoError(t, err)
 	// committing block 2
 	assert.NoError(t, txMgr.Commit())
@@ -1253,7 +1278,7 @@ func TestRemoveStaleAndCommitPvtDataOfOldBlocksWithExpiry(t *testing.T) {
 
 	blkAndPvtdata = prepareNextBlockForTest(t, txMgr, bg, "txid-3",
 		map[string]string{"pubkey3": "pub-value3"}, nil, false)
-	_, err = txMgr.ValidateAndPrepare(blkAndPvtdata, true)
+	_, _, err = txMgr.ValidateAndPrepare(blkAndPvtdata, true)
 	assert.NoError(t, err)
 	// committing block 3
 	assert.NoError(t, txMgr.Commit())
@@ -1278,7 +1303,7 @@ func TestRemoveStaleAndCommitPvtDataOfOldBlocksWithExpiry(t *testing.T) {
 
 	blkAndPvtdata = prepareNextBlockForTest(t, txMgr, bg, "txid-4",
 		map[string]string{"pubkey4": "pub-value4"}, nil, false)
-	_, err = txMgr.ValidateAndPrepare(blkAndPvtdata, true)
+	_, _, err = txMgr.ValidateAndPrepare(blkAndPvtdata, true)
 	assert.NoError(t, err)
 	// committing block 4 and should purge pvtkey2
 	assert.NoError(t, txMgr.Commit())
@@ -1299,7 +1324,7 @@ func testPvtValueEqual(t *testing.T, txMgr txmgr.TxMgr, ns, coll, key string, va
 	defer simulator.Done()
 	pvtValue, err := simulator.GetPrivateData(ns, coll, key)
 	assert.NoError(t, err)
-	if bytes.Compare(pvtValue, value) == 0 {
+	if bytes.Equal(pvtValue, value) {
 		return true
 	}
 	return false
@@ -1309,6 +1334,7 @@ func TestDeleteOnCursor(t *testing.T) {
 	cID := "cid"
 	env := testEnvs[0]
 	env.init(t, "TestDeleteOnCursor", nil)
+	defer env.cleanup()
 
 	txMgr := env.getTxMgr()
 	txMgrHelper := newTxMgrTestHelper(t, txMgr)
@@ -1361,6 +1387,7 @@ func TestTxSimulatorMissingPvtdataExpiry(t *testing.T) {
 		},
 	)
 	testEnv.init(t, ledgerid, btlPolicy)
+	defer testEnv.cleanup()
 
 	txMgr := testEnv.getTxMgr()
 	populateCollConfigForTest(t, txMgr.(*LockBasedTxMgr), []collConfigkey{{"ns", "coll"}}, version.NewHeight(1, 1))
@@ -1369,7 +1396,7 @@ func TestTxSimulatorMissingPvtdataExpiry(t *testing.T) {
 
 	blkAndPvtdata := prepareNextBlockForTest(t, txMgr, bg, "txid-1",
 		map[string]string{"pubkey1": "pub-value1"}, map[string]string{"pvtkey1": "pvt-value1"}, false)
-	_, err := txMgr.ValidateAndPrepare(blkAndPvtdata, true)
+	_, _, err := txMgr.ValidateAndPrepare(blkAndPvtdata, true)
 	assert.NoError(t, err)
 	assert.NoError(t, txMgr.Commit())
 
@@ -1378,7 +1405,7 @@ func TestTxSimulatorMissingPvtdataExpiry(t *testing.T) {
 	blkAndPvtdata = prepareNextBlockForTest(t, txMgr, bg, "txid-2",
 
 		map[string]string{"pubkey1": "pub-value2"}, map[string]string{"pvtkey2": "pvt-value2"}, false)
-	_, err = txMgr.ValidateAndPrepare(blkAndPvtdata, true)
+	_, _, err = txMgr.ValidateAndPrepare(blkAndPvtdata, true)
 	assert.NoError(t, err)
 	assert.NoError(t, txMgr.Commit())
 
@@ -1386,7 +1413,7 @@ func TestTxSimulatorMissingPvtdataExpiry(t *testing.T) {
 
 	blkAndPvtdata = prepareNextBlockForTest(t, txMgr, bg, "txid-2",
 		map[string]string{"pubkey1": "pub-value3"}, map[string]string{"pvtkey3": "pvt-value3"}, false)
-	_, err = txMgr.ValidateAndPrepare(blkAndPvtdata, true)
+	_, _, err = txMgr.ValidateAndPrepare(blkAndPvtdata, true)
 	assert.NoError(t, err)
 	assert.NoError(t, txMgr.Commit())
 
@@ -1399,6 +1426,7 @@ func TestTxWithPubMetadata(t *testing.T) {
 		testLedgerID := "testtxwithpubmetadata"
 		testEnv.init(t, testLedgerID, nil)
 		testTxWithPubMetadata(t, testEnv)
+		testEnv.cleanup()
 	}
 }
 
@@ -1456,6 +1484,7 @@ func TestTxWithPvtdataMetadata(t *testing.T) {
 		t.Logf("Running test for TestEnv = %s", testEnv.getName())
 		testEnv.init(t, ledgerid, btlPolicy)
 		testTxWithPvtdataMetadata(t, testEnv, ns, coll)
+		testEnv.cleanup()
 	}
 }
 
@@ -1479,7 +1508,7 @@ func testTxWithPvtdataMetadata(t *testing.T, env testEnv, ns, coll string) {
 	s1.Done()
 
 	blkAndPvtdata1 := prepareNextBlockForTestFromSimulator(t, bg, s1)
-	_, err := txMgr.ValidateAndPrepare(blkAndPvtdata1, true)
+	_, _, err := txMgr.ValidateAndPrepare(blkAndPvtdata1, true)
 	assert.NoError(t, err)
 	assert.NoError(t, txMgr.Commit())
 
@@ -1498,7 +1527,7 @@ func testTxWithPvtdataMetadata(t *testing.T, env testEnv, ns, coll string) {
 	s2.Done()
 
 	blkAndPvtdata2 := prepareNextBlockForTestFromSimulator(t, bg, s2)
-	_, err = txMgr.ValidateAndPrepare(blkAndPvtdata2, true)
+	_, _, err = txMgr.ValidateAndPrepare(blkAndPvtdata2, true)
 	assert.NoError(t, err)
 	assert.NoError(t, txMgr.Commit())
 
@@ -1567,4 +1596,12 @@ func checkPvtdataTestQueryResults(t *testing.T, qe ledger.QueryExecutor, ns, col
 	assert.NoError(t, err)
 	assert.Equal(t, expectedMetadata, committedMetadata)
 	t.Logf("key=%s, value=%s, metadata=%s", key, committedVal, committedMetadata)
+}
+
+func TestName(t *testing.T) {
+	testEnv := testEnvsMap[levelDBtestEnvName]
+	testEnv.init(t, "testLedger", nil)
+	defer testEnv.cleanup()
+	txMgr := testEnv.getTxMgr()
+	assert.Equal(t, "state", txMgr.Name())
 }

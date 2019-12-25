@@ -15,6 +15,10 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	protosgossip "github.com/hyperledger/fabric-protos-go/gossip"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset"
+	"github.com/hyperledger/fabric-protos-go/peer"
+	"github.com/hyperledger/fabric-protos-go/transientstore"
 	"github.com/hyperledger/fabric/core/common/privdata"
 	"github.com/hyperledger/fabric/gossip/api"
 	gossipCommon "github.com/hyperledger/fabric/gossip/common"
@@ -25,10 +29,6 @@ import (
 	"github.com/hyperledger/fabric/gossip/protoext"
 	"github.com/hyperledger/fabric/gossip/util"
 	"github.com/hyperledger/fabric/msp"
-	"github.com/hyperledger/fabric/protos/common"
-	protosgossip "github.com/hyperledger/fabric/protos/gossip"
-	"github.com/hyperledger/fabric/protos/ledger/rwset"
-	"github.com/hyperledger/fabric/protos/transientstore"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 )
@@ -84,7 +84,7 @@ type distributorImpl struct {
 // CollectionAccessFactory an interface to generate collection access policy
 type CollectionAccessFactory interface {
 	// AccessPolicy based on collection configuration
-	AccessPolicy(config *common.CollectionConfig, chainID string) (privdata.CollectionAccessPolicy, error)
+	AccessPolicy(config *peer.CollectionConfig, chainID string) (privdata.CollectionAccessPolicy, error)
 }
 
 // policyAccessFactory the implementation of CollectionAccessFactory
@@ -92,10 +92,10 @@ type policyAccessFactory struct {
 	IdentityDeserializerFactory
 }
 
-func (p *policyAccessFactory) AccessPolicy(config *common.CollectionConfig, chainID string) (privdata.CollectionAccessPolicy, error) {
+func (p *policyAccessFactory) AccessPolicy(config *peer.CollectionConfig, chainID string) (privdata.CollectionAccessPolicy, error) {
 	colAP := &privdata.SimpleCollection{}
 	switch cconf := config.Payload.(type) {
-	case *common.CollectionConfig_StaticCollectionConfig:
+	case *peer.CollectionConfig_StaticCollectionConfig:
 		err := colAP.Setup(cconf.StaticCollectionConfig, p.GetIdentityDeserializer(chainID))
 		if err != nil {
 			return nil, errors.WithMessagef(err, "error setting up collection  %#v", cconf.StaticCollectionConfig.Name)
@@ -173,11 +173,12 @@ func (d *distributorImpl) computeDisseminationPlan(txID string,
 				return nil, errors.Errorf("No collection access policy filter computed for %v", collectionName)
 			}
 
-			pvtDataMsg, err := d.createPrivateDataMessage(txID, namespace, collection, &common.CollectionConfigPackage{Config: []*common.CollectionConfig{colCP}}, blkHt)
+			pvtDataMsg, err := d.createPrivateDataMessage(txID, namespace, collection, &peer.CollectionConfigPackage{Config: []*peer.CollectionConfig{colCP}}, blkHt)
 			if err != nil {
 				return nil, errors.WithStack(err)
 			}
 
+			logger.Debugf("Computing dissemination plan for collection [%s]", collectionName)
 			dPlan, err := d.disseminationPlanForMsg(colAP, colFilter, pvtDataMsg)
 			if err != nil {
 				return nil, errors.WithStack(err)
@@ -188,7 +189,7 @@ func (d *distributorImpl) computeDisseminationPlan(txID string,
 	return disseminationPlan, nil
 }
 
-func (d *distributorImpl) getCollectionConfig(config *common.CollectionConfigPackage, collection *rwset.CollectionPvtReadWriteSet) (*common.CollectionConfig, error) {
+func (d *distributorImpl) getCollectionConfig(config *peer.CollectionConfigPackage, collection *rwset.CollectionPvtReadWriteSet) (*peer.CollectionConfig, error) {
 	for _, c := range config.Config {
 		if staticConfig := c.GetStaticCollectionConfig(); staticConfig != nil {
 			if staticConfig.Name == collection.CollectionName {
@@ -215,20 +216,37 @@ func (d *distributorImpl) disseminationPlanForMsg(colAP privdata.CollectionAcces
 		return nil, err
 	}
 
+	m := pvtDataMsg.GetPrivateData().Payload
+
 	eligiblePeers := d.eligiblePeersOfChannel(routingFilter)
 	identitySets := d.identitiesOfEligiblePeers(eligiblePeers, colAP)
 
-	// Select one representative from each org
+	peerEndpoints := map[string]string{}
+	for _, peer := range eligiblePeers {
+		epToAdd := peer.Endpoint
+		if epToAdd == "" {
+			epToAdd = peer.InternalEndpoint
+		}
+		peerEndpoints[string(peer.PKIid)] = epToAdd
+	}
+
 	maximumPeerCount := colAP.MaximumPeerCount()
 	requiredPeerCount := colAP.RequiredPeerCount()
 
+	remainingPeers := []api.PeerIdentityInfo{}
+	selectedPeerEndpoints := []string{}
+
+	rand.Seed(time.Now().Unix())
+	// Select one representative from each org
 	if maximumPeerCount > 0 {
 		for _, selectionPeers := range identitySets {
 			required := 1
 			if requiredPeerCount == 0 {
 				required = 0
 			}
-			peer2SendPerOrg := selectionPeers[rand.Intn(len(selectionPeers))]
+			selectedPeerIndex := rand.Intn(len(selectionPeers))
+			peer2SendPerOrg := selectionPeers[selectedPeerIndex]
+			selectedPeerEndpoints = append(selectedPeerEndpoints, peerEndpoints[string(peer2SendPerOrg.PKIId)])
 			sc := gossipgossip.SendCriteria{
 				Timeout:  d.pushAckTimeout,
 				Channel:  gossipCommon.ChannelID(d.chainID),
@@ -246,34 +264,70 @@ func (d *distributorImpl) disseminationPlanForMsg(colAP privdata.CollectionAcces
 				},
 			})
 
+			// Add unselected peers to remainingPeers
+			for i, peer := range selectionPeers {
+				if i != selectedPeerIndex {
+					remainingPeers = append(remainingPeers, peer)
+				}
+			}
+
 			if requiredPeerCount > 0 {
 				requiredPeerCount--
 			}
 
 			maximumPeerCount--
 			if maximumPeerCount == 0 {
+				logger.Debug("MaximumPeerCount satisfied")
+				logger.Debugf("Disseminating private RWSet for TxID [%s] namespace [%s] collection [%s] to peers: %v", m.TxId, m.Namespace, m.CollectionName, selectedPeerEndpoints)
 				return disseminationPlan, nil
 			}
 		}
 	}
 
-	// criteria to select remaining peers to satisfy colAP.MaximumPeerCount()
-	// collection policy parameters
-	sc := gossipgossip.SendCriteria{
-		Timeout:  d.pushAckTimeout,
-		Channel:  gossipCommon.ChannelID(d.chainID),
-		MaxPeers: maximumPeerCount,
-		MinAck:   requiredPeerCount,
-		IsEligible: func(member discovery.NetworkMember) bool {
-			return routingFilter(member)
-		},
+	// criteria to select remaining peers to satisfy colAP.MaximumPeerCount() if there are still
+	// unselected peers remaining for dissemination
+	numPeersToSelect := maximumPeerCount
+	if len(remainingPeers) < maximumPeerCount {
+		numPeersToSelect = len(remainingPeers)
+	}
+	if numPeersToSelect > 0 {
+		logger.Debugf("MaximumPeerCount not satisfied, selecting %d more peer(s) for dissemination", numPeersToSelect)
+	}
+	for maximumPeerCount > 0 && len(remainingPeers) > 0 {
+		required := 1
+		if requiredPeerCount == 0 {
+			required = 0
+		}
+		selectedPeerIndex := rand.Intn(len(remainingPeers))
+		peer2Send := remainingPeers[selectedPeerIndex]
+		selectedPeerEndpoints = append(selectedPeerEndpoints, peerEndpoints[string(peer2Send.PKIId)])
+		sc := gossipgossip.SendCriteria{
+			Timeout:  d.pushAckTimeout,
+			Channel:  gossipCommon.ChannelID(d.chainID),
+			MaxPeers: 1,
+			MinAck:   required,
+			IsEligible: func(member discovery.NetworkMember) bool {
+				return bytes.Equal(member.PKIid, peer2Send.PKIId)
+			},
+		}
+		disseminationPlan = append(disseminationPlan, &dissemination{
+			criteria: sc,
+			msg: &protoext.SignedGossipMessage{
+				Envelope:      proto.Clone(pvtDataMsg.Envelope).(*protosgossip.Envelope),
+				GossipMessage: proto.Clone(pvtDataMsg.GossipMessage).(*protosgossip.GossipMessage),
+			},
+		})
+		if requiredPeerCount > 0 {
+			requiredPeerCount--
+		}
+
+		maximumPeerCount--
+
+		// remove the selected peer from remaining peers
+		remainingPeers = append(remainingPeers[:selectedPeerIndex], remainingPeers[selectedPeerIndex+1:]...)
 	}
 
-	disseminationPlan = append(disseminationPlan, &dissemination{
-		criteria: sc,
-		msg:      pvtDataMsg,
-	})
-
+	logger.Debugf("Disseminating private RWSet for TxID [%s] namespace [%s] collection [%s] to peers: %v", m.TxId, m.Namespace, m.CollectionName, selectedPeerEndpoints)
 	return disseminationPlan, nil
 }
 
@@ -339,7 +393,7 @@ func (d *distributorImpl) reportSendDuration(startTime time.Time) {
 
 func (d *distributorImpl) createPrivateDataMessage(txID, namespace string,
 	collection *rwset.CollectionPvtReadWriteSet,
-	ccp *common.CollectionConfigPackage,
+	ccp *peer.CollectionConfigPackage,
 	blkHt uint64) (*protoext.SignedGossipMessage, error) {
 	msg := &protosgossip.GossipMessage{
 		Channel: []byte(d.chainID),

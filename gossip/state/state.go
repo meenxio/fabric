@@ -13,6 +13,11 @@ import (
 	"time"
 
 	pb "github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	proto "github.com/hyperledger/fabric-protos-go/gossip"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset"
+	"github.com/hyperledger/fabric-protos-go/peer"
+	"github.com/hyperledger/fabric-protos-go/transientstore"
 	vsccErrors "github.com/hyperledger/fabric/common/errors"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/comm"
@@ -21,10 +26,6 @@ import (
 	"github.com/hyperledger/fabric/gossip/metrics"
 	"github.com/hyperledger/fabric/gossip/protoext"
 	"github.com/hyperledger/fabric/gossip/util"
-	"github.com/hyperledger/fabric/protos/common"
-	proto "github.com/hyperledger/fabric/protos/gossip"
-	"github.com/hyperledger/fabric/protos/ledger/rwset"
-	"github.com/hyperledger/fabric/protos/transientstore"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 )
@@ -92,7 +93,7 @@ type MCSAdapter interface {
 	// VerifyBlock returns nil if the block is properly signed, and the claimed seqNum is the
 	// sequence number that the block's header contains.
 	// else returns error
-	VerifyBlock(channelID common2.ChannelID, seqNum uint64, signedBlock []byte) error
+	VerifyBlock(channelID common2.ChannelID, seqNum uint64, signedBlock *common.Block) error
 
 	// VerifyByChannel checks that signature is a valid signature of message
 	// under a peer's verification key, but also in the context of a specific channel.
@@ -110,8 +111,9 @@ type ledgerResources interface {
 	// StorePvtData used to persist private date into transient store
 	StorePvtData(txid string, privData *transientstore.TxPvtReadWriteSetWithConfigInfo, blckHeight uint64) error
 
-	// GetPvtDataAndBlockByNum get block by number and returns also all related private data
-	// the order of private data in slice of PvtDataCollections doesn't imply the order of
+	// GetPvtDataAndBlockByNum gets block by number and also returns all related private data
+	// that requesting peer is eligible for.
+	// The order of private data in slice of PvtDataCollections doesn't imply the order of
 	// transactions in the block related to these private data, to get the correct placement
 	// need to read TxPvtData.SeqInBlock field
 	GetPvtDataAndBlockByNum(seqNum uint64, peerAuthInfo protoutil.SignedData) (*common.Block, util.PvtDataCollections, error)
@@ -138,11 +140,6 @@ type GossipStateProviderImpl struct {
 	chainID string
 
 	mediator *ServicesMediator
-
-	// Channel to read gossip messages from
-	gossipChan <-chan *proto.GossipMessage
-
-	commChan <-chan protoext.ReceivedMessage
 
 	// Queue of payloads which wasn't acquired yet
 	payloads PayloadsBuffer
@@ -245,10 +242,6 @@ func NewGossipStateProvider(
 		mediator: services,
 		// Chain ID
 		chainID: chainID,
-		// Channel to read new messages from
-		gossipChan: gossipChan,
-		// Channel to read direct messages from other peers
-		commChan: commChan,
 		// Create a queue for payloads, wrapped in a metrics buffer
 		payloads: &metricsBuffer{
 			PayloadsBuffer: NewPayloadsBuffer(height),
@@ -267,13 +260,14 @@ func NewGossipStateProvider(
 		config:              config,
 	}
 
-	logger.Infof("Updating metadata information, "+
-		"current ledger sequence is at = %d, next expected block is = %d", height-1, s.payloads.Next())
+	logger.Infof("Updating metadata information for channel %s, "+
+		"current ledger sequence is at = %d, next expected block is = %d", chainID, height-1, s.payloads.Next())
 	logger.Debug("Updating gossip ledger height to", height)
 	services.UpdateLedgerHeight(height, common2.ChannelID(s.chainID))
 
 	// Listen for incoming communication
-	go s.listen()
+	go s.receiveAndQueueGossipMessages(gossipChan)
+	go s.receiveAndDispatchDirectMessages(commChan)
 	// Deliver in order messages into the incoming channel
 	go s.deliverPayloads()
 	if s.config.StateEnabled {
@@ -286,34 +280,49 @@ func NewGossipStateProvider(
 	return s
 }
 
-func (s *GossipStateProviderImpl) listen() {
-	for {
-		select {
-		case msg := <-s.gossipChan:
-			logger.Debug("Received new message via gossip channel")
-			go s.queueNewMessage(msg)
-		case msg := <-s.commChan:
-			logger.Debug("Dispatching a message", msg)
-			go s.dispatch(msg)
-		case <-s.stopCh:
-			logger.Debug("Stop listening for new messages")
-			return
-		}
-	}
-}
-func (s *GossipStateProviderImpl) dispatch(msg protoext.ReceivedMessage) {
-	// Check type of the message
-	if protoext.IsRemoteStateMessage(msg.GetGossipMessage().GossipMessage) {
-		logger.Debug("Handling direct state transfer message")
-		// Got state transfer request response
-		s.directMessage(msg)
-	} else if msg.GetGossipMessage().GetPrivateData() != nil {
-		logger.Debug("Handling private data collection message")
-		// Handling private data replication message
-		s.privateDataMessage(msg)
-	}
+func (s *GossipStateProviderImpl) receiveAndQueueGossipMessages(ch <-chan *proto.GossipMessage) {
+	for msg := range ch {
+		logger.Debug("Received new message via gossip channel")
+		go func(msg *proto.GossipMessage) {
+			if !bytes.Equal(msg.Channel, []byte(s.chainID)) {
+				logger.Warning("Received enqueue for channel",
+					string(msg.Channel), "while expecting channel", s.chainID, "ignoring enqueue")
+				return
+			}
 
+			dataMsg := msg.GetDataMsg()
+			if dataMsg != nil {
+				if err := s.addPayload(dataMsg.GetPayload(), nonBlocking); err != nil {
+					logger.Warningf("Block [%d] received from gossip wasn't added to payload buffer: %v", dataMsg.Payload.SeqNum, err)
+					return
+				}
+
+			} else {
+				logger.Debug("Gossip message received is not of data message type, usually this should not happen.")
+			}
+		}(msg)
+	}
 }
+
+func (s *GossipStateProviderImpl) receiveAndDispatchDirectMessages(ch <-chan protoext.ReceivedMessage) {
+	for msg := range ch {
+		logger.Debug("Dispatching a message", msg)
+		go func(msg protoext.ReceivedMessage) {
+			gm := msg.GetGossipMessage()
+			// Check type of the message
+			if protoext.IsRemoteStateMessage(gm.GossipMessage) {
+				logger.Debug("Handling direct state transfer message")
+				// Got state transfer request response
+				s.directMessage(msg)
+			} else if gm.GetPrivateData() != nil {
+				logger.Debug("Handling private data collection message")
+				// Handling private data replication message
+				s.privateDataMessage(msg)
+			}
+		}(msg)
+	}
+}
+
 func (s *GossipStateProviderImpl) privateDataMessage(msg protoext.ReceivedMessage) {
 	if !bytes.Equal(msg.GetGossipMessage().Channel, []byte(s.chainID)) {
 		logger.Warning("Received state transfer request for channel",
@@ -351,7 +360,7 @@ func (s *GossipStateProviderImpl) privateDataMessage(msg protoext.ReceivedMessag
 
 	txPvtRwSetWithConfig := &transientstore.TxPvtReadWriteSetWithConfigInfo{
 		PvtRwset: txPvtRwSet,
-		CollectionConfigs: map[string]*common.CollectionConfigPackage{
+		CollectionConfigs: map[string]*peer.CollectionConfigPackage{
 			pvtDataMsg.Payload.Namespace: pvtDataMsg.Payload.CollectionConfigs,
 		},
 	}
@@ -498,7 +507,13 @@ func (s *GossipStateProviderImpl) handleStateResponse(msg protoext.ReceivedMessa
 	}
 	for _, payload := range response.GetPayloads() {
 		logger.Debugf("Received payload with sequence number %d.", payload.SeqNum)
-		if err := s.mediator.VerifyBlock(common2.ChannelID(s.chainID), payload.SeqNum, payload.Data); err != nil {
+		block, err := protoutil.UnmarshalBlock(payload.Data)
+		if err != nil {
+			logger.Warningf("Error unmarshaling payload to block for sequence number %d, due to %+v", payload.SeqNum, err)
+			return uint64(0), err
+		}
+
+		if err := s.mediator.VerifyBlock(common2.ChannelID(s.chainID), payload.SeqNum, block); err != nil {
 			err = errors.WithStack(err)
 			logger.Warningf("Error verifying block with sequence number %d, due to %+v", payload.SeqNum, err)
 			return uint64(0), err
@@ -507,7 +522,7 @@ func (s *GossipStateProviderImpl) handleStateResponse(msg protoext.ReceivedMessa
 			max = payload.SeqNum
 		}
 
-		err := s.addPayload(payload, blocking)
+		err = s.addPayload(payload, blocking)
 		if err != nil {
 			logger.Warningf("Block [%d] received from block transfer wasn't added to payload buffer: %v", payload.SeqNum, err)
 		}
@@ -526,26 +541,6 @@ func (s *GossipStateProviderImpl) Stop() {
 		close(s.stateRequestCh)
 		close(s.stateResponseCh)
 	})
-}
-
-// queueNewMessage makes new message notification/handler
-func (s *GossipStateProviderImpl) queueNewMessage(msg *proto.GossipMessage) {
-	if !bytes.Equal(msg.Channel, []byte(s.chainID)) {
-		logger.Warning("Received enqueue for channel",
-			string(msg.Channel), "while expecting channel", s.chainID, "ignoring enqueue")
-		return
-	}
-
-	dataMsg := msg.GetDataMsg()
-	if dataMsg != nil {
-		if err := s.addPayload(dataMsg.GetPayload(), nonBlocking); err != nil {
-			logger.Warningf("Block [%d] received from gossip wasn't added to payload buffer: %v", dataMsg.Payload.SeqNum, err)
-			return
-		}
-
-	} else {
-		logger.Debug("Gossip message received is not of data message type, usually this should not happen.")
-	}
 }
 
 func (s *GossipStateProviderImpl) deliverPayloads() {

@@ -13,27 +13,21 @@ import (
 	"errors"
 	"io/ioutil"
 	"net"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	mspproto "github.com/hyperledger/fabric-protos-go/msp"
+	pb "github.com/hyperledger/fabric-protos-go/peer"
 	configtxtest "github.com/hyperledger/fabric/common/configtx/test"
-	"github.com/hyperledger/fabric/common/metrics/disabled"
-	"github.com/hyperledger/fabric/core/chaincode/platforms"
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/comm/testpb"
-	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
 	"github.com/hyperledger/fabric/core/ledger/mock"
-	ledgermocks "github.com/hyperledger/fabric/core/ledger/mock"
 	"github.com/hyperledger/fabric/core/ledger/util"
 	"github.com/hyperledger/fabric/core/peer"
 	"github.com/hyperledger/fabric/msp"
-	cb "github.com/hyperledger/fabric/protos/common"
-	mspproto "github.com/hyperledger/fabric/protos/msp"
-	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -95,6 +89,18 @@ func createMSPConfig(rootCerts, tlsRootCerts, tlsIntermediateCerts [][]byte,
 		TlsRootCerts:         tlsRootCerts,
 		TlsIntermediateCerts: tlsIntermediateCerts,
 		Name:                 mspID,
+		FabricNodeOus: &mspproto.FabricNodeOUs{
+			Enable: true,
+			ClientOuIdentifier: &mspproto.FabricOUIdentifier{
+				OrganizationalUnitIdentifier: "client",
+			},
+			PeerOuIdentifier: &mspproto.FabricOUIdentifier{
+				OrganizationalUnitIdentifier: "peer",
+			},
+			AdminOuIdentifier: &mspproto.FabricOUIdentifier{
+				OrganizationalUnitIdentifier: "admin",
+			},
+		},
 	}
 
 	fmpsjs, err := proto.Marshal(fmspconf)
@@ -164,7 +170,7 @@ func TestUpdateRootsFromConfigBlock(t *testing.T) {
 	require.NoError(t, err)
 
 	serverConfig := comm.ServerConfig{
-		SecOpts: &comm.SecureOptions{
+		SecOpts: comm.SecureOptions{
 			UseTLS:            true,
 			Certificate:       org1Server1Cert,
 			Key:               org1Server1Key,
@@ -173,38 +179,16 @@ func TestUpdateRootsFromConfigBlock(t *testing.T) {
 		},
 	}
 
-	peer.Default.CredentialSupport = comm.NewCredentialSupport()
-
-	testDir, err := ioutil.TempDir("", "peer-pkg")
-	require.NoError(t, err)
-	defer os.RemoveAll(testDir)
-
-	ledgermgmt.Initialize(&ledgermgmt.Initializer{
-		CustomTxProcessors:            nil,
-		PlatformRegistry:              &platforms.Registry{},
-		DeployedChaincodeInfoProvider: &ledgermocks.DeployedChaincodeInfoProvider{},
-		MembershipInfoProvider:        nil,
-		MetricsProvider:               &disabled.Provider{},
-		Config: &ledger.Config{
-			RootFSPath:    filepath.Join(testDir, "ledgersData"),
-			StateDBConfig: &ledger.StateDBConfig{},
-			PrivateDataConfig: &ledger.PrivateDataConfig{
-				MaxBatchSize:    5000,
-				BatchesInterval: 1000,
-				PurgeInterval:   100,
-			},
-			HistoryDBConfig: &ledger.HistoryDBConfig{
-				Enabled: true,
-			},
-		},
-	})
+	peerInstance, cleanup := peer.NewTestPeer(t)
+	defer cleanup()
+	peerInstance.CredentialSupport = comm.NewCredentialSupport()
 
 	createChannel := func(t *testing.T, cid string, block *cb.Block) {
-		err = peer.Default.CreateChannel(block, nil, &mock.DeployedChaincodeInfoProvider{}, nil, nil)
+		err = peerInstance.CreateChannel(cid, block, &mock.DeployedChaincodeInfoProvider{}, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to create config block (%s)", err)
 		}
-		t.Logf("Channel %s MSPIDs: (%s)", cid, peer.Default.GetMSPIDs(cid))
+		t.Logf("Channel %s MSPIDs: (%s)", cid, peerInstance.GetMSPIDs(cid))
 	}
 
 	org1CertPool, err := createCertPool([][]byte{org1CA})
@@ -298,8 +282,8 @@ func TestUpdateRootsFromConfigBlock(t *testing.T) {
 				return
 			}
 
-			peer.Default.Server = server
-			peer.Default.ServerConfig = test.serverConfig
+			peerInstance.Server = server
+			peerInstance.ServerConfig = test.serverConfig
 
 			assert.NoError(t, err, "NewGRPCServer should not have returned an error")
 			assert.NotNil(t, server, "NewGRPCServer should have created a server")

@@ -7,54 +7,39 @@ SPDX-License-Identifier: Apache-2.0
 package peer
 
 import (
+	"github.com/hyperledger/fabric/bccsp/sw"
+	"github.com/hyperledger/fabric/common/channelconfig"
 	configtxtest "github.com/hyperledger/fabric/common/configtx/test"
-	mockchannelconfig "github.com/hyperledger/fabric/common/mocks/config"
-	mockconfigtx "github.com/hyperledger/fabric/common/mocks/configtx"
-	mockpolicies "github.com/hyperledger/fabric/common/mocks/policies"
 	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
 )
 
-//MockInitialize resets chains for test env
-func MockInitialize() (cleanup func(), err error) {
-	cleanup, err = ledgermgmt.InitializeTestEnvWithInitializer(
-		&ledgermgmt.Initializer{},
-	)
-	Default.mutex.Lock()
-	Default.channels = make(map[string]*Channel)
-	Default.mutex.Unlock()
-	return cleanup, err
-}
-
-// MockCreateChain used for creating a ledger for a chain for tests
-// without having to join
-func MockCreateChain(cid string) error {
+func CreateMockChannel(p *Peer, cid string, resources channelconfig.Resources) error {
 	var ledger ledger.PeerLedger
 	var err error
 
-	if ledger = Default.GetLedger(cid); ledger == nil {
+	if ledger = p.GetLedger(cid); ledger == nil {
 		gb, _ := configtxtest.MakeGenesisBlock(cid)
-		if ledger, err = ledgermgmt.CreateLedger(gb); err != nil {
+		if ledger, err = p.LedgerMgr.CreateLedger(cid, gb); err != nil {
 			return err
 		}
 	}
 
-	Default.mutex.Lock()
-	defer Default.mutex.Unlock()
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
 
-	if Default.channels == nil {
-		Default.channels = map[string]*Channel{}
+	if p.channels == nil {
+		p.channels = map[string]*Channel{}
 	}
 
-	Default.channels[cid] = &Channel{
-		ledger: ledger,
-		resources: &mockchannelconfig.Resources{
-			PolicyManagerVal: &mockpolicies.Manager{
-				Policy: &mockpolicies.Policy{},
-			},
-			ConfigtxValidatorVal: &mockconfigtx.Validator{},
-			ApplicationConfigVal: &mockchannelconfig.MockApplication{CapabilitiesRv: &mockchannelconfig.MockApplicationCapabilities{}},
-		},
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	if err != nil {
+		return err
+	}
+
+	p.channels[cid] = &Channel{
+		ledger:         ledger,
+		resources:      resources,
+		cryptoProvider: cryptoProvider,
 	}
 
 	return nil

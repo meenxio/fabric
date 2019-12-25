@@ -14,20 +14,20 @@ import (
 	"os"
 	"testing"
 
+	"github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/ledger/cceventmgmt"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
 	"github.com/hyperledger/fabric/core/ledger/util"
-	"github.com/hyperledger/fabric/protos/common"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestMain(m *testing.M) {
 	exitCode := m.Run()
 	for _, testEnv := range testEnvs {
-		testEnv.Cleanup()
+		testEnv.StopExternalResource()
 	}
 	os.Exit(exitCode)
 }
@@ -84,6 +84,7 @@ func TestDB(t *testing.T) {
 
 func testDB(t *testing.T, env TestEnv) {
 	env.Init(t)
+	defer env.Cleanup()
 	db := env.GetDBHandle(generateLedgerID(t))
 
 	updates := NewUpdateBatch()
@@ -149,6 +150,7 @@ func TestGetStateMultipleKeys(t *testing.T) {
 
 func testGetStateMultipleKeys(t *testing.T, env TestEnv) {
 	env.Init(t)
+	defer env.Cleanup()
 	db := env.GetDBHandle(generateLedgerID(t))
 
 	updates := NewUpdateBatch()
@@ -191,6 +193,7 @@ func TestGetStateRangeScanIterator(t *testing.T) {
 
 func testGetStateRangeScanIterator(t *testing.T, env TestEnv) {
 	env.Init(t)
+	defer env.Cleanup()
 	db := env.GetDBHandle(generateLedgerID(t))
 
 	updates := NewUpdateBatch()
@@ -251,6 +254,7 @@ func TestQueryOnCouchDB(t *testing.T) {
 
 func testQueryOnCouchDB(t *testing.T, env TestEnv) {
 	env.Init(t)
+	defer env.Cleanup()
 	db := env.GetDBHandle(generateLedgerID(t))
 	updates := NewUpdateBatch()
 
@@ -331,6 +335,7 @@ func TestLongDBNameOnCouchDB(t *testing.T) {
 
 func testLongDBNameOnCouchDB(t *testing.T, env TestEnv) {
 	env.Init(t)
+	defer env.Cleanup()
 
 	// Creates metadataDB (i.e., chainDB)
 	// Allowed pattern for chainName: [a-z][a-z0-9.-]
@@ -425,10 +430,10 @@ func TestHandleChainCodeDeployOnCouchDB(t *testing.T) {
 	}
 }
 
-func createCollectionConfig(collectionName string) *common.CollectionConfig {
-	return &common.CollectionConfig{
-		Payload: &common.CollectionConfig_StaticCollectionConfig{
-			StaticCollectionConfig: &common.StaticCollectionConfig{
+func createCollectionConfig(collectionName string) *peer.CollectionConfig {
+	return &peer.CollectionConfig{
+		Payload: &peer.CollectionConfig_StaticCollectionConfig{
+			StaticCollectionConfig: &peer.StaticCollectionConfig{
 				Name:              collectionName,
 				MemberOrgsPolicy:  nil,
 				RequiredPeerCount: 0,
@@ -441,10 +446,11 @@ func createCollectionConfig(collectionName string) *common.CollectionConfig {
 
 func testHandleChainCodeDeploy(t *testing.T, env TestEnv) {
 	env.Init(t)
+	defer env.Cleanup()
 	db := env.GetDBHandle(generateLedgerID(t))
 
 	coll1 := createCollectionConfig("collectionMarbles")
-	ccp := &common.CollectionConfigPackage{Config: []*common.CollectionConfig{coll1}}
+	ccp := &peer.CollectionConfigPackage{Config: []*peer.CollectionConfig{coll1}}
 	chaincodeDef := &cceventmgmt.ChaincodeDefinition{Name: "ns1", Hash: nil, Version: "", CollectionConfigs: ccp}
 
 	commonStorageDB := db.(*CommonStorageDB)
@@ -483,7 +489,7 @@ func testHandleChainCodeDeploy(t *testing.T, env TestEnv) {
 	assert.NoError(t, err)
 
 	coll2 := createCollectionConfig("collectionMarblesPrivateDetails")
-	ccp = &common.CollectionConfigPackage{Config: []*common.CollectionConfig{coll1, coll2}}
+	ccp = &peer.CollectionConfigPackage{Config: []*peer.CollectionConfig{coll1, coll2}}
 	chaincodeDef = &cceventmgmt.ChaincodeDefinition{Name: "ns1", Hash: nil, Version: "", CollectionConfigs: ccp}
 
 	// The collection config is added to the chaincodeDef and it contains all collections
@@ -545,6 +551,7 @@ func TestMetadataRetrieval(t *testing.T) {
 
 func testMetadataRetrieval(t *testing.T, env TestEnv) {
 	env.Init(t)
+	defer env.Cleanup()
 	db := env.GetDBHandle(generateLedgerID(t))
 
 	updates := NewUpdateBatch()
